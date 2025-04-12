@@ -1,4 +1,6 @@
--- AO Word Wars: Game Logic with Tokens, GUI, Usernames, and Transfers
+
+-- ANSI Color Codes for Styling
+Colors = { gray = "\27[90m", blue = "\27[34m", green = "\27[32m", red = "\27[31m", reset = "\27[0m" }
 
 -- Game State
 Letters = Letters or {}
@@ -13,7 +15,520 @@ LetterValues = {
   O=1, P=3, Q=10, R=1, S=1, T=1, U=1, V=4, W=4, X=8, Y=3, Z=10
 }
 
--- Small Dictionary of Valid Words (Expand as needed)
+-- Utility: Get table keys
+function table.keys(tbl)
+  local keys = {}
+  for k in pairs(tbl) do keys[#keys + 1] = k end
+  return keys
+end
+
+-- Calculate Points Based on Letter Rarity
+function getLetterPoints(word)
+  local points = 0
+  for i = 1, #word do
+    local char = string.sub(word, i, i)
+    points = points + (LetterValues[char] or 1)
+  end
+  return points
+end
+
+-- Initialize Letters (Random A-Z)
+function generateLetters()
+  local pool = {}
+  local alphabet = {"A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z"}
+  for i = #alphabet, 2, -1 do
+    local j = math.random(i)
+    alphabet[i], alphabet[j] = alphabet[j], alphabet[i]
+  end
+  for i = 1, 10 do
+    pool[alphabet[i]] = 1
+  end
+  return pool
+end
+
+-- Start New Round with Leaderboard Token Bonus
+function startRound()
+  if Round > 1 then
+    local sorted = {}
+    for p, score in pairs(Leaderboard) do
+      sorted[#sorted + 1] = { player = p, score = score }
+    end
+    table.sort(sorted, function(a, b) return a.score > b.score end)
+    if sorted[1] then Players[sorted[1].player].tokens = (Players[sorted[1].player].tokens or 0) + 5 end
+    if sorted[2] then Players[sorted[2].player].tokens = (Players[sorted[2].player].tokens or 0) + 3 end
+    if sorted[3] then Players[sorted[3].player].tokens = (Players[sorted[3].player].tokens or 0) + 1 end
+  end
+  
+  Letters = generateLetters()
+  Round = Round + 1
+  RoundStart = os.time()
+  for player, data in pairs(Players) do
+    data.words = {}
+    data.wordOrder = {} -- Reset word order
+    data.boostActive = false
+  end
+  local letterStr = table.concat(table.keys(Letters), ", ")
+  ao.send({ 
+    Target = ao.env.Process.Id, 
+    Tags = { Action = "New-Round" }, 
+    Data = Colors.gray .. "Round " .. Colors.blue .. Round .. Colors.gray .. ": Letters = " .. Colors.blue .. letterStr .. Colors.reset 
+  })
+end
+
+-- Validate Word
+function isValidWord(word)
+  local letterCounts = {}
+  for k, v in pairs(Letters) do letterCounts[k] = v end
+  word = string.upper(word)
+  if not ValidWords[word] then return false end
+  for i = 1, #word do
+    local char = string.sub(word, i, i)
+    if not letterCounts[char] or letterCounts[char] <= 0 then return false end
+    letterCounts[char] = letterCounts[char] - 1
+  end
+  return true
+end
+
+-- Check if Username is Unique
+function isUsernameUnique(username, excludePlayer)
+  for player, data in pairs(Players) do
+    if player ~= excludePlayer and data.username and string.lower(data.username) == string.lower(username) then
+      return false
+    end
+  end
+  return true
+end
+
+-- Get Display Name (Username or Truncated ID)
+function getDisplayName(player)
+  return Players[player].username or (player:sub(1, 10) .. "...")
+end
+
+-- Get Player ID by Username
+function getPlayerByUsername(username)
+  for player, data in pairs(Players) do
+    if data.username and string.lower(data.username) == string.lower(username) then
+      return player
+    end
+  end
+  return nil
+end
+
+-- Simplified GUI Panel Helper (No Vertical Lines, No Truncation, Only Dashes)
+function formatPanel(title, lines)
+  local dashCount = math.max(20, #title + 10)
+  local panel = Colors.gray .. string.rep("-", dashCount) .. "\n"
+  panel = panel .. Colors.blue .. title .. Colors.gray .. "\n"
+  for _, line in ipairs(lines) do
+    panel = panel .. line .. "\n"
+  end
+  panel = panel .. string.rep("-", dashCount) .. Colors.reset
+  return panel
+end
+
+-- Join Game Handler with Username and Token Minting
+Handlers.add("JoinGame", Handlers.utils.hasMatchingTag("Action", "JoinGame"), function(msg)
+  local player = msg.From
+  local username = msg.Tags.Username
+  
+  if not Players[player] then
+    Players[player] = { score = 0, words = {}, wordOrder = {}, tokens = 10, username = nil, boostActive = false }
+    ao.send({ 
+      Target = ao.env.Process.Id, 
+      Tags = { Action = "Player-Joined" }, 
+      Data = Colors.gray .. "Player " .. Colors.blue .. player .. Colors.gray .. " joined" .. Colors.reset 
+    })
+  end
+  
+  if username then
+    username = username:sub(1, 15)
+    if isUsernameUnique(username, player) then
+      Players[player].username = username
+    else
+      username = nil
+    end
+  end
+  
+  local displayName = getDisplayName(player)
+  local lines = {
+    Colors.green .. "Welcome to AO Word Wars!" .. Colors.reset,
+    Colors.gray .. "Username: " .. Colors.blue .. displayName .. Colors.reset,
+    Colors.gray .. "Round: " .. Colors.blue .. Round .. Colors.reset,
+    Colors.gray .. "Letters: " .. Colors.blue .. table.concat(table.keys(Letters), ", ") .. Colors.reset,
+    Colors.gray .. "Your Tokens: " .. Colors.green .. Players[player].tokens .. Colors.gray .. " (10 minted!)" .. Colors.reset,
+    Colors.gray .. "Commands:" .. Colors.reset,
+    Colors.gray .. "  SubmitWord (Word=<word>)" .. Colors.reset,
+    Colors.gray .. "  Bomb (Username=<username>)" .. Colors.reset,
+    Colors.gray .. "  TransferTokens (Receiver=<username>, Amount=<number>)" .. Colors.reset,
+    Colors.gray .. "  GetLeaderboard, GetState, GetHint, BoostUp, ShowGUI" .. Colors.reset,
+    Colors.gray .. "Join with Username: Send(Action='JoinGame', Username='<username>')" .. Colors.reset
+  }
+  ao.send({ 
+    Target = player, 
+    Tags = { Action = "JoinGameResponse" }, 
+    Data = formatPanel("Welcome", lines) 
+  })
+end)
+
+-- Submit Word Handler (Supports BoostUp)
+Handlers.add("SubmitWord", Handlers.utils.hasMatchingTag("Action", "SubmitWord"), function(msg)
+  local player = msg.From
+  local word = msg.Tags.Word
+  
+  if not word or #word < 1 then
+    ao.send({ 
+      Target = player, 
+      Tags = { Action = "SubmitWordResponse" }, 
+      Data = formatPanel("Error", { Colors.red .. "No word provided" .. Colors.reset }) 
+    })
+    return
+  end
+  
+  word = string.upper(word)
+  if not Players[player] then 
+    Players[player] = { score = 0, words = {}, wordOrder = {}, tokens = 10, username = nil, boostActive = false }
+  end
+  
+  if Players[player].words[word] then
+    ao.send({ 
+      Target = player, 
+      Tags = { Action = "SubmitWordResponse" }, 
+      Data = formatPanel("Error", { Colors.red .. "Word already used this round: " .. word .. Colors.reset }) 
+    })
+    return
+  end
+  
+  if isValidWord(word) then
+    local basePoints = getLetterPoints(word)
+    local timeElapsed = os.time() - RoundStart
+    local speedBonus = (timeElapsed <= 10) and 2 or 0
+    local points = basePoints + speedBonus
+    local tokensEarned = points
+    local boostApplied = Players[player].boostActive
+    if boostApplied then
+      points = points * 2
+      tokensEarned = tokensEarned * 2
+      Players[player].boostActive = false
+    end
+    Players[player].score = (Players[player].score or 0) + points
+    Players[player].tokens = (Players[player].tokens or 0) + tokensEarned
+    Players[player].words[word] = true
+    Players[player].wordOrder[#Players[player].wordOrder + 1] = word -- Track submission order
+    Leaderboard[player] = (Leaderboard[player] or 0) + points
+    local displayName = getDisplayName(player)
+    local lines = {
+      Colors.blue .. displayName .. Colors.gray .. " formed:" .. Colors.reset,
+      Colors.gray .. "Word: " .. Colors.blue .. word .. Colors.reset,
+      Colors.gray .. "Points: +" .. Colors.green .. points .. Colors.gray .. " (Base: " .. basePoints .. ", Bonus: " .. speedBonus .. (boostApplied and ", Boost: x2" or "") .. ")" .. Colors.reset,
+      Colors.gray .. "Tokens: +" .. Colors.green .. tokensEarned .. Colors.reset,
+      Colors.gray .. "New Score: " .. Colors.green .. Players[player].score .. Colors.reset,
+      Colors.gray .. "New Token Balance: " .. Colors.green .. Players[player].tokens .. Colors.reset
+    }
+    ao.send({ 
+      Target = player, 
+      Tags = { Action = "SubmitWordResponse" }, 
+      Data = formatPanel("Success", lines) 
+    })
+  else
+    ao.send({ 
+      Target = player, 
+      Tags = { Action = "SubmitWordResponse" }, 
+      Data = formatPanel("Error", { Colors.red .. "Invalid word: " .. word .. Colors.reset }) 
+    })
+  end
+end)
+
+-- Bomb Handler (Fixed: Last Word, Target Notification)
+Handlers.add("Bomb", Handlers.utils.hasMatchingTag("Action", "Bomb"), function(msg)
+  local player = msg.From
+  local targetUsername = msg.Tags.Username
+  
+  if not targetUsername then
+    ao.send({ 
+      Target = player, 
+      Tags = { Action = "BombResponse" }, 
+      Data = formatPanel("Error", { Colors.red .. "No target username provided" .. Colors.reset }) 
+    })
+    return
+  end
+  
+  local target = getPlayerByUsername(targetUsername)
+  if not Players[player] or not target or not Players[target] or player == target then
+    ao.send({ 
+      Target = player, 
+      Tags = { Action = "BombResponse" }, 
+      Data = formatPanel("Error", { Colors.red .. "Invalid player or target username: " .. targetUsername .. Colors.reset }) 
+    })
+    return
+  end
+  
+  if (Players[player].tokens or 0) < 5 then
+    ao.send({ 
+      Target = player, 
+      Tags = { Action = "BombResponse" }, 
+      Data = formatPanel("Error", { Colors.red .. "Not enough tokens (need 5)" .. Colors.reset }) 
+    })
+    return
+  end
+  
+  local lastWord = Players[target].wordOrder[#Players[target].wordOrder]
+  if lastWord and Players[target].words[lastWord] then
+    local points = getLetterPoints(lastWord)
+    Players[target].score = math.max(0, Players[target].score - points)
+    Leaderboard[target] = math.max(0, Leaderboard[target] - points)
+    Players[target].words[lastWord] = nil
+    table.remove(Players[target].wordOrder, #Players[target].wordOrder)
+    Players[player].tokens = Players[player].tokens - 5
+    local playerName = getDisplayName(player)
+    local targetName = getDisplayName(target)
+    local bomberLines = {
+      Colors.blue .. playerName .. Colors.gray .. " bombed " .. Colors.blue .. targetName .. Colors.gray .. ":" .. Colors.reset,
+      Colors.gray .. "Removed Word: " .. Colors.blue .. lastWord .. Colors.reset,
+      Colors.gray .. "Points Lost: " .. Colors.green .. points .. Colors.reset,
+      Colors.gray .. "Tokens Spent: " .. Colors.red .. "-5" .. Colors.reset,
+      Colors.gray .. "New Token Balance: " .. Colors.green .. Players[player].tokens .. Colors.reset
+    }
+    local targetLines = {
+      Colors.blue .. playerName .. Colors.gray .. " bombed your word:" .. Colors.reset,
+      Colors.gray .. "Removed Word: " .. Colors.blue .. lastWord .. Colors.reset,
+      Colors.gray .. "Points Lost: " .. Colors.green .. points .. Colors.reset,
+      Colors.gray .. "New Score: " .. Colors.green .. Players[target].score .. Colors.reset
+    }
+    ao.send({ 
+      Target = player, 
+      Tags = { Action = "BombResponse" }, 
+      Data = formatPanel("Bomb Result", bomberLines) 
+    })
+    ao.send({ 
+      Target = target, 
+      Tags = { Action = "BombNotification" }, 
+      Data = formatPanel("Word Bombed", targetLines) 
+    })
+    ao.send({ 
+      Target = ao.env.Process.Id, 
+      Tags = { Action = "UpdateLeaderboard" }, 
+      Data = json.encode(Leaderboard) 
+    })
+  else
+    ao.send({ 
+      Target = player, 
+      Tags = { Action = "BombResponse" }, 
+      Data = formatPanel("Error", { Colors.red .. "Target has no words to bomb" .. Colors.reset }) 
+    })
+  end
+end)
+
+-- Transfer Tokens Handler
+Handlers.add("TransferTokens", Handlers.utils.hasMatchingTag("Action", "TransferTokens"), function(msg)
+  local player = msg.From
+  local receiverUsername = msg.Tags.Receiver
+  local amount = tonumber(msg.Tags.Amount)
+  
+  if not receiverUsername or not amount or amount <= 0 then
+    ao.send({ 
+      Target = player, 
+      Tags = { Action = "TransferResponse" }, 
+      Data = formatPanel("Error", { Colors.red .. "Invalid receiver or amount" .. Colors.reset }) 
+    })
+    return
+  end
+  
+  local receiver = getPlayerByUsername(receiverUsername)
+  if not receiver or receiver == player then
+    ao.send({ 
+      Target = player, 
+      Tags = { Action = "TransferResponse" }, 
+      Data = formatPanel("Error", { Colors.red .. "Receiver not found or invalid" .. Colors.reset }) 
+    })
+    return
+  end
+  
+  if (Players[player].tokens or 0) < amount then
+    ao.send({ 
+      Target = player, 
+      Tags = { Action = "TransferResponse" }, 
+      Data = formatPanel("Error", { Colors.red .. "Not enough tokens" .. Colors.reset }) 
+    })
+    return
+  end
+  
+  Players[player].tokens = Players[player].tokens - amount
+  Players[receiver].tokens = (Players[receiver].tokens or 0) + amount
+  local senderName = getDisplayName(player)
+  local receiverName = getDisplayName(receiver)
+  local lines = {
+    Colors.blue .. senderName .. Colors.gray .. " transferred:" .. Colors.reset,
+    Colors.gray .. "To: " .. Colors.blue .. receiverName .. Colors.reset,
+    Colors.gray .. "Amount: " .. Colors.green .. amount .. Colors.gray .. " tokens" .. Colors.reset,
+    Colors.gray .. "New Balance: " .. Colors.green .. Players[player].tokens .. Colors.reset
+  }
+  ao.send({ 
+    Target = player, 
+    Tags = { Action = "TransferResponse" }, 
+    Data = formatPanel("Transfer Success", lines) 
+  })
+  ao.send({ 
+    Target = receiver, 
+    Tags = { Action = "TransferReceived" }, 
+    Data = formatPanel("Tokens Received", { 
+      Colors.blue .. senderName .. Colors.gray .. " sent you " .. Colors.green .. amount .. Colors.gray .. " tokens" .. Colors.reset, 
+      Colors.gray .. "New Balance: " .. Colors.green .. Players[receiver].tokens .. Colors.reset 
+    }) 
+  })
+end)
+
+-- Get Leaderboard Handler
+Handlers.add("GetLeaderboard", Handlers.utils.hasMatchingTag("Action", "GetLeaderboard"), function(msg)
+  local player = msg.From
+  local sorted = {}
+  for p, score in pairs(Leaderboard) do
+    sorted[#sorted + 1] = { player = p, score = score, tokens = Players[p].tokens or 0 }
+  end
+  table.sort(sorted, function(a, b) return a.score > b.score end)
+  local lines = {}
+  for i = 1, math.min(5, #sorted) do
+    local name = getDisplayName(sorted[i].player)
+    lines[#lines + 1] = Colors.gray .. i .. ". " .. Colors.blue .. name .. Colors.gray .. ": " .. Colors.green .. sorted[i].score .. Colors.gray .. " pts, " .. Colors.green .. sorted[i].tokens .. Colors.gray .. " tokens" .. Colors.reset
+  end
+  ao.send({ 
+    Target = player, 
+    Tags = { Action = "LeaderboardResponse" }, 
+    Data = formatPanel("Leaderboard", lines) 
+  })
+end)
+
+-- Get State Handler
+Handlers.add("GetState", Handlers.utils.hasMatchingTag("Action", "GetState"), function(msg)
+  local player = msg.From
+  local lines = {
+    Colors.gray .. "Round: " .. Colors.blue .. Round .. Colors.reset,
+    Colors.gray .. "Letters: " .. Colors.blue .. table.concat(table.keys(Letters), ", ") .. Colors.reset,
+    Colors.gray .. "Players:" .. Colors.reset
+  }
+  for p, data in pairs(Players) do
+    local name = getDisplayName(p)
+    local words = table.concat(table.keys(data.words), ", ")
+    lines[#lines + 1] = Colors.blue .. name .. Colors.gray .. ": " .. Colors.green .. data.score .. Colors.gray .. " pts, " .. Colors.green .. (data.tokens or 0) .. Colors.gray .. " tokens" .. Colors.reset
+    lines[#lines + 1] = Colors.gray .. "  Words: " .. Colors.blue .. words .. Colors.reset
+    lines[#lines + 1] = Colors.gray .. "  Boost Active: " .. Colors.blue .. (data.boostActive and "Yes" or "No") .. Colors.reset
+  end
+  ao.send({ 
+    Target = player, 
+    Tags = { Action = "StateResponse" }, 
+    Data = formatPanel("Game State", lines) 
+  })
+end)
+
+-- Get Hint Handler (Costs 5 Tokens)
+Handlers.add("GetHint", Handlers.utils.hasMatchingTag("Action", "GetHint"), function(msg)
+  local player = msg.From
+  if (Players[player].tokens or 0) < 5 then
+    ao.send({ 
+      Target = player, 
+      Tags = { Action = "HintResponse" }, 
+      Data = formatPanel("Error", { Colors.red .. "Not enough tokens (need 5)" .. Colors.reset }) 
+    })
+    return
+  end
+  local validOptions = {}
+  for word in pairs(ValidWords) do
+    if isValidWord(word) then
+      validOptions[#validOptions + 1] = word
+    end
+  end
+  if #validOptions > 0 then
+    local hint = validOptions[math.random(1, #validOptions)]
+    Players[player].tokens = Players[player].tokens - 5
+    local lines = {
+      Colors.gray .. "Suggested Word: " .. Colors.blue .. hint .. Colors.reset,
+      Colors.gray .. "Tokens Spent: " .. Colors.red .. "-5" .. Colors.reset,
+      Colors.gray .. "New Token Balance: " .. Colors.green .. Players[player].tokens .. Colors.reset
+    }
+    ao.send({ 
+      Target = player, 
+      Tags = { Action = "HintResponse" }, 
+      Data = formatPanel("Hint", lines) 
+    })
+  else
+    ao.send({ 
+      Target = player, 
+      Tags = { Action = "HintResponse" }, 
+      Data = formatPanel("Error", { Colors.red .. "No valid words found" .. Colors.reset }) 
+    })
+  end
+end)
+
+-- BoostUp Handler (Doubles Next Word's Points/Tokens)
+Handlers.add("BoostUp", Handlers.utils.hasMatchingTag("Action", "BoostUp"), function(msg)
+  local player = msg.From
+  if not Players[player] then
+    ao.send({ 
+      Target = player, 
+      Tags = { Action = "BoostUpResponse" }, 
+      Data = formatPanel("Error", { Colors.red .. "Player not found" .. Colors.reset }) 
+    })
+    return
+  end
+  if Players[player].boostActive then
+    ao.send({ 
+      Target = player, 
+      Tags = { Action = "BoostUpResponse" }, 
+      Data = formatPanel("Error", { Colors.red .. "Boost already active" .. Colors.reset }) 
+    })
+    return
+  end
+  if (Players[player].tokens or 0) < 3 then
+    ao.send({ 
+      Target = player, 
+      Tags = { Action = "BoostUpResponse" }, 
+      Data = formatPanel("Error", { Colors.red .. "Not enough tokens (need 3)" .. Colors.reset }) 
+    })
+    return
+  end
+  Players[player].boostActive = true
+  Players[player].tokens = Players[player].tokens - 3
+  local lines = {
+    Colors.gray .. "Boost activated! Your next valid word scores double points and tokens." .. Colors.reset,
+    Colors.gray .. "Tokens Spent: " .. Colors.red .. "-3" .. Colors.reset,
+    Colors.gray .. "New Token Balance: " .. Colors.green .. Players[player].tokens .. Colors.reset
+  }
+  ao.send({ 
+    Target = player, 
+    Tags = { Action = "BoostUpResponse" }, 
+    Data = formatPanel("Boost Activated", lines) 
+  })
+end)
+
+-- Show GUI Handler
+Handlers.add("ShowGUI", Handlers.utils.hasMatchingTag("Action", "ShowGUI"), function(msg)
+  local player = msg.From
+  local displayName = getDisplayName(player)
+  local lines = {
+    Colors.gray .. "Round: " .. Colors.blue .. Round .. Colors.reset,
+    Colors.gray .. "Letters: " .. Colors.blue .. table.concat(table.keys(Letters), ", ") .. Colors.reset,
+    Colors.gray .. "Username: " .. Colors.blue .. displayName .. Colors.reset,
+    Colors.gray .. "Your Score: " .. Colors.green .. (Players[player].score or 0) .. Colors.reset,
+    Colors.gray .. "Your Tokens: " .. Colors.green .. (Players[player].tokens or 0) .. Colors.reset,
+    Colors.gray .. "Boost Active: " .. Colors.blue .. (Players[player].boostActive and "Yes" or "No") .. Colors.reset,
+    Colors.gray .. "Your Words: " .. Colors.blue .. table.concat(table.keys(Players[player].words), ", ") .. Colors.reset,
+    Colors.gray .. "Commands:" .. Colors.reset,
+    Colors.gray .. "  SubmitWord (Word=<word>)" .. Colors.reset,
+    Colors.gray .. "  Bomb (Username=<username>)" .. Colors.reset,
+    Colors.gray .. "  TransferTokens (Receiver=<username>, Amount=<number>)" .. Colors.reset,
+    Colors.gray .. "  GetLeaderboard, GetState, GetHint, BoostUp, ShowGUI" .. Colors.reset
+  }
+  ao.send({ 
+    Target = player, 
+    Tags = { Action = "GUIResponse" }, 
+    Data = formatPanel("AO Word Wars", lines) 
+  })
+end)
+
+-- Initialize with Cron (Solution 1: No initial startRound call)
+ao.send({ Target = ao.env.Process.Id, Tags = { Action = "Cron", Interval = "1m" } })
+Handlers.add("Cron", Handlers.utils.hasMatchingTag("Action", "Cron"), startRound)
+
+-- Valid Words Dictionary (Moved to End)
 ValidWords = {
   ["A"] = true, ["A'S"] = true, ["AA"] = true, ["AA'S"] = true, ["AAA"] = true, ["AAM"] = true, ["AB"] = true, ["AB'S"] = true, ["ABA"] = true, ["ABC"] = true, ["ABC'S"] = true, ["ABCS"] = true, ["ABD"] = true, ["ABM"] = true, ["ABM'S"] = true, ["ABMS"] = true, ["ABS"] = true, ["AC"] = true, ["AC'S"] = true, ["ACLU"] = true, ["ACLU'S"] = true, ["ACT"] = true, ["ACTH"] = true, ["ACTH'S"] = true, ["AD"] = true, ["AD'S"] = true, ["ADC"] = true, ["ADD"] = true, ["ADM"] = true, ["ADP"] = true, ["ADP'S"] = true, ["AEC"] = true, ["AEC'S"] = true, ["AF"] = true, ["AFAIK"] = true, ["AFB"] = true, ["AFC"] = true, ["AFC'S"] = true, ["AFDC"] = true, ["AFN"] = true, ["AFT"] = true, ["AGC"] = true, ["AHQ"] = true, ["AI"] = true, ["AI'S"] = true, ["AIDS"] = true, ["AIDS'S"] = true, ["AIS"] = true, ["AK"] = true, ["AL"] = true, ["ALGOL"] = true, ["ALGOL'S"] = true, ["AM"] = true, ["AM'S"] = true, ["AMA"] = true, ["AMD"] = true, ["AMD'S"] = true, ["AMP"] = true, ["AMP'S"] = true, ["ANSI"] = true, ["ANSIS"] = true, ["ANZUS"] = true, ["ANZUS'S"] = true, ["AOL"] = true, ["AOL'S"] = true, ["AP"] = true, ["AP'S"] = true, ["APB"] = true, ["APC"] = true, ["APC'S"] = true, ["API"] = true, ["APO"] = true, ["APR"] = true, ["AQ"] = true, ["AR"] = true, ["ARC"] = true, ["AS"] = true, ["ASAP"] = true, ["ASCII"] = true, ["ASCII'S"] = true, ["ASCIIS"] = true, ["ASL"] = true, ["ASL'S"] = true, ["ASPCA"] = true, ["ASSR"] = true, ["ATC"] = true, ["ATM"] = true, ["ATM'S"] = true, ["ATP"] = true, ["ATP'S"] = true, ["ATS"] = true, ["ATV"] = true, ["AV"] = true, ["AVI"] = true, ["AWACS"] = true, ["AWACS'S"] = true, ["AWOL"] = true, ["AWOL'S"] = true, ["AWS"] = true, ["AWS'S"] = true, ["AZ"] = true, ["AZ'S"] = true, ["AZT"] = true, ["AZT'S"] = true, ["AACHEN"] = true, ["AACHEN'S"] = true, ["AALBORG"] = true, ["AALESUND"] = true, ["AALIYAH"] = true, ["AALIYAH'S"] = true, ["AALST"] = true, ["AALST'S"] = true, ["AALTO"] = true, ["AARAU"] = true, ["AARGAU"] = true, ["AARHUS"] = true, ["AARON"] = true, ["AARON'S"] = true, ["AARONIC"] = true, ["AB"] = true, ["AB'S"] = true, ["ABADAN"] = true, ["ABADDON"] = true, ["ABBA"] = true, ["ABBA'S"] = true, ["ABBAS"] = true, ["ABBAS'S"] = true, ["ABBASID"] = true, ["ABBASID'S"] = true, ["ABBEVILLIAN"] = true, ["ABBOTT"] = true, ["ABBOTT'S"] = true, ["ABBY"] = true, ["ABBY'S"] = true, ["ABDIAS"] = true, ["ABDUL"] = true, ["ABDUL'S"] = true, ["ABE"] = true, ["ABE'S"] = true, ["ABEDNEGO"] = true, ["ABEL"] = true, ["ABEL'S"] = true, ["ABELARD"] = true, ["ABELARD'S"] = true, ["ABELSON"] = true, ["ABELSON'S"] = true, ["ABENAKI"] = true, ["ABEOKUTA"] = true, ["ABERDARE"] = true, ["ABERDEEN"] = true, ["ABERDEEN'S"] = true, ["ABERDONIAN"] = true, ["ABERNATHY"] = true, ["ABERNATHY'S"] = true, ["ABIB"] = true, ["ABIDJAN"] = true, ["ABIDJAN'S"] = true, ["ABIGAIL"] = true, ["ABIGAIL'S"] = true, ["ABILENE"] = true, ["ABILENE'S"] = true, ["ABINGDON"] = true, ["ABKHAZIA"] = true, ["ABKHAZIA'S"] = true, ["ABKHAZIAN"] = true, ["ABNER"] = true, ["ABNER'S"] = true, ["ABORIGINAL"] = true, ["ABORIGINAL'S"] = true, ["ABORIGINALS"] = true, ["ABORIGINE"] = true, ["ABORIGINE'S"] = true, ["ABORIGINES"] = true, ["ABRAHAM"] = true, ["ABRAHAM'S"] = true, ["ABRAM"] = true, ["ABRAM'S"] = true, ["ABRAMS"] = true, ["ABRAMS'S"] = true, ["ABRUZZI"] = true, ["ABRUZZI'S"] = true, ["ABS"] = true, ["ABSALOM"] = true, ["ABSALOM'S"] = true, ["ABUJA"] = true, ["ABUJA'S"] = true, ["ABUKIR"] = true, ["ABYDOS"] = true, ["ABYSSINIA"] = true, ["ABYSSINIA'S"] = true, ["ABYSSINIAN"] = true, ["ABYSSINIAN'S"] = true, ["ABYSSINIANS"] = true, ["AC"] = true, ["AC'S"] = true, ["ACADIA"] = true, ["ACADIA'S"] = true, ["ACADIAN"] = true, ["ACADIAN'S"] = true, ["ACADIANS"] = true, ["ACAPULCO"] = true, ["ACAPULCO'S"] = true, ["ACCAD"] = true, ["ACCENTURE"] = true, ["ACCENTURE'S"] = true, ["ACCRA"] = true, ["ACCRA'S"] = true, ["ACELDAMA"] = true, ["ACER"] = true, ["ACEVEDO"] = true, ["ACEVEDO'S"] = true, ["ACHAEA"] = true, ["ACHAEAN"] = true, ["ACHAEAN'S"] = true, ["ACHAEANS"] = true, ["ACHAEMENID"] = true, ["ACHATES"] = true, ["ACHEBE"] = true, ["ACHEBE'S"] = true, ["ACHELOUS"] = true, ["ACHERNAR"] = true, ["ACHERNAR'S"] = true, ["ACHERON"] = true, ["ACHERON'S"] = true, ["ACHESON"] = true, ["ACHESON'S"] = true, ["ACHILLES"] = true, ["ACHILLES'S"] = true, ["ACHITOPHEL"] = true, ["ACIS"] = true, ["ACONCAGUA"] = true, ["ACONCAGUA'S"] = true, ["ACOSTA"] = true, ["ACOSTA'S"] = true, ["ACRILAN"] = true, ["ACRILAN'S"] = true, ["ACRILANS"] = true, ["ACROPOLIS"] = true, ["ACRUX"] = true, ["ACRUX'S"] = true, ["ACTAEON"] = true, ["ACTAEON'S"] = true, ["ACTIUM"] = true, ["ACTIUM'S"] = true, ["ACTON"] = true, ["ACTON'S"] = true, ["ACTS"] = true, ["ACTS'S"] = true, ["ACUFF"] = true, ["ACUFF'S"] = true, ["ADA"] = true, ["ADA'S"] = true, ["ADAM"] = true, ["ADAM'S"] = true, ["ADAMIC"] = true, ["ADAMITE"] = true, ["ADAMS"] = true, ["ADAMS'S"] = true, ["ADAN"] = true, ["ADAN'S"] = true, ["ADANA"] = true, ["ADANA'S"] = true, ["ADAPA"] = true, ["ADAPA'S"] = true, ["ADAR"] = true, ["ADAR'S"] = true, ["ADARS"] = true, ["ADAS"] = true, ["ADDAMS"] = true, ["ADDAMS'S"] = true, ["ADDERLEY"] = true, ["ADDERLEY'S"] = true, ["ADDIE"] = true, ["ADDIE'S"] = true, ["ADDINGTON"] = true, ["ADDISON"] = true, ["ADDISON'S"] = true, ["ADDISONIAN"] = true, ["ADDRESSOGRAPH"] = true, ["ADDRESSOGRAPH'S"] = true, ["ADDRESSOGRAPHS"] = true, ["ADELA"] = true, ["ADELA'S"] = true, ["ADELAIDE"] = true, ["ADELAIDE'S"] = true, ["ADELBERT"] = true, ["ADELBERT'S"] = true, ["ADELE"] = true, ["ADELE'S"] = true, ["ADELINE"] = true, ["ADELINE'S"] = true, ["ADEN"] = true, ["ADEN'S"] = true, ["ADENAUER"] = true, ["ADENAUER'S"] = true, ["ADHARA"] = true, ["ADHARA'S"] = true, ["ADIDAS"] = true, ["ADIDAS'S"] = true, ["ADIGE"] = true, ["ADIGE'S"] = true, ["ADIGRANTH"] = true, ["ADIRONDACK"] = true, ["ADIRONDACK'S"] = true, ["ADIRONDACKS"] = true, ["ADIRONDACKS'S"] = true, ["ADKINS"] = true, ["ADKINS'S"] = true, ["ADLER"] = true, ["ADLER'S"] = true, ["ADLERIAN"] = true, ["ADM"] = true, ["ADMETUS"] = true, ["ADMIRAL"] = true, ["ADMIRAL'S"] = true, ["ADMIRALTY"] = true, ["ADOLF"] = true, ["ADOLF'S"] = true, ["ADOLFO"] = true, ["ADOLFO'S"] = true, ["ADOLPH"] = true, ["ADOLPH'S"] = true, ["ADONAI"] = true, ["ADONIC"] = true, ["ADONIC'S"] = true, ["ADONIS"] = true, ["ADONIS'S"] = true, ["ADONISES"] = true, ["ADOWA"] = true, ["ADRASTUS"] = true, ["ADRENALIN"] = true, ["ADRENALIN'S"] = true, ["ADRENALINS"] = true, ["ADRIAN"] = true, ["ADRIAN'S"] = true, ["ADRIANA"] = true, ["ADRIANA'S"] = true, ["ADRIANOPLE"] = true, ["ADRIANOPLE'S"] = true, ["ADRIATIC"] = true, ["ADRIATIC'S"] = true, ["ADRIENNE"] = true, ["ADRIENNE'S"] = true, ["ADUWA"] = true, ["ADVENT"] = true, ["ADVENT'S"] = true, ["ADVENTIST"] = true, ["ADVENTIST'S"] = true, ["ADVENTISTS"] = true, ["ADVENTS"] = true, ["ADVIL"] = true, ["ADVIL'S"] = true, ["AEGAEON"] = true, ["AEGEAN"] = true, ["AEGEAN'S"] = true, ["AEGEUS"] = true, ["AEGINA"] = true, ["AEGINA'S"] = true, ["AEGIR"] = true, ["AEGISTHUS"] = true, ["AEGOSPOTAMI"] = true, ["AEGOSPOTAMI'S"] = true, ["AEGYPTUS"] = true, ["AELFRIC"] = true, ["AELFRIC'S"] = true, ["AENEAS"] = true, ["AENEAS'S"] = true, ["AENEID"] = true, ["AENEID'S"] = true, ["AEOLIA"] = true, ["AEOLIA'S"] = true, ["AEOLIAN"] = true, ["AEOLIAN'S"] = true, ["AEOLIANS"] = true, ["AEOLIC"] = true, ["AEOLIC'S"] = true, ["AEOLIS"] = true, ["AEOLIS'S"] = true, ["AEOLUS"] = true, ["AEOLUS'S"] = true, ["AEROFLOT"] = true, ["AEROFLOT'S"] = true, ["AESCHINES"] = true, ["AESCHYLEAN"] = true, ["AESCHYLUS"] = true, ["AESCHYLUS'S"] = true, ["AESCULAPIAN"] = true, ["AESCULAPIUS"] = true, ["AESCULAPIUS'S"] = true, ["AESIR"] = true, ["AESIR'S"] = true, ["AESOP"] = true, ["AESOP'S"] = true, ["AESOPIAN"] = true, ["AESOPIC"] = true, ["AETNA"] = true, ["AETOLIA"] = true, ["AF"] = true, ["AFGHAN"] = true, ["AFGHAN'S"] = true, ["AFGHANI"] = true, ["AFGHANI'S"] = true, ["AFGHANISTAN"] = true, ["AFGHANISTAN'S"] = true, ["AFGHANS"] = true, ["AFR"] = true, ["AFRICA"] = true, ["AFRICA'S"] = true, ["AFRICAN"] = true, ["AFRICAN'S"] = true, ["AFRICANA"] = true, ["AFRICANDER"] = true, ["AFRICANDER'S"] = true, ["AFRICANDERS"] = true, ["AFRICANIST"] = true, ["AFRICANIZE"] = true, ["AFRICANS"] = true, ["AFRIKAANS"] = true, ["AFRIKAANS'S"] = true, ["AFRIKANDER"] = true, ["AFRIKANDER'S"] = true, ["AFRIKANDERS"] = true, ["AFRIKANER"] = true, ["AFRIKANER'S"] = true, ["AFRIKANERS"] = true, ["AFRO"] = true, ["AFRO'S"] = true, ["AFROCENTRIC"] = true, ["AFROCENTRISM"] = true, ["AFROCENTRISM'S"] = true, ["AFROCENTRIST"] = true, ["AFROS"] = true, ["AG"] = true, ["AG'S"] = true, ["AGADIR"] = true, ["AGAMEMNON"] = true, ["AGAMEMNON'S"] = true, ["AGANA"] = true, ["AGASSI"] = true, ["AGASSI'S"] = true, ["AGASSIZ"] = true, ["AGASSIZ'S"] = true, ["AGATHA"] = true, ["AGATHA'S"] = true, ["AGE"] = true, ["AGEE"] = true, ["AGEE'S"] = true, ["AGGEUS"] = true, ["AGGEUS'S"] = true, ["AGGIE"] = true, ["AGGIE'S"] = true, ["AGINCOURT"] = true, ["AGINCOURT'S"] = true, ["AGLAIA"] = true, ["AGLAIA'S"] = true, ["AGNES"] = true, ["AGNES'S"] = true, ["AGNEW"] = true, ["AGNEW'S"] = true, ["AGNI"] = true, ["AGNI'S"] = true, ["AGRA"] = true, ["AGRA'S"] = true, ["AGRAM"] = true, ["AGRICOLA"] = true, ["AGRICOLA'S"] = true, ["AGRIGENTO"] = true, ["AGRIPPA"] = true, ["AGRIPPA'S"] = true, ["AGRIPPINA"] = true, ["AGRIPPINA'S"] = true, ["AGUADILLA"] = true, ["AGUADILLA'S"] = true, ["AGUASCALIENTES"] = true, ["AGUILAR"] = true, ["AGUILAR'S"] = true, ["AGUINALDO"] = true, ["AGUINALDO'S"] = true, ["AGUIRRE"] = true, ["AGUIRRE'S"] = true, ["AGULHAS"] = true, ["AGUSTIN"] = true, ["AGUSTIN'S"] = true, ["AHAB"] = true, ["AHAB'S"] = true, ["AHAGGAR"] = true, ["AHAGGAR'S"] = true, ["AHASUERUS"] = true, ["AHASUERUS'S"] = true, ["AHITHOPHEL"] = true, ["AHMAD"] = true, ["AHMAD'S"] = true, ["AHMADABAD"] = true, ["AHMADABAD'S"] = true, ["AHMADINEJAD"] = true, ["AHMADINEJAD'S"] = true, ["AHMED"] = true, ["AHMED'S"] = true, ["AHMEDNAGAR"] = true, ["AHRIMAN"] = true,
   ["AHRIMAN'S"] = true, ["AHVENANMAA"] = true, ["AHWAZ"] = true, ["AIDA"] = true, ["AIDA'S"] = true, ["AIDONEUS"] = true, ["AIDONEUS'S"] = true, ["AIKEN"] = true, ["AIKEN'S"] = true, ["AILEEN"] = true, ["AILEEN'S"] = true, ["AIMEE"] = true, ["AIMEE'S"] = true, ["AIN"] = true, ["AINTAB"] = true, ["AINU"] = true, ["AINU'S"] = true, ["AIRDRIE"] = true, ["AIREDALE"] = true, ["AIREDALE'S"] = true, ["AIREDALES"] = true, ["AIRES"] = true, ["AIRES'S"] = true, ["AISHA"] = true, ["AISHA'S"] = true, ["AISNE"] = true, ["AITKEN"] = true, ["AJACCIO"] = true, ["AJAX"] = true, ["AJAX'S"] = true, ["AJMER"] = true, ["AKAN"] = true, ["AKAN'S"] = true, ["AKANS"] = true, ["AKBAR"] = true, ["AKBAR'S"] = true, ["AKHENATON"] = true, ["AKHENATON'S"] = true, ["AKHMATOVA"] = true, ["AKHMATOVA'S"] = true, ["AKHNATON"] = true, ["AKHNATON'S"] = true, ["AKIHITO"] = true, ["AKIHITO'S"] = true, ["AKITA"] = true, ["AKITA'S"] = true, ["AKIVA"] = true, ["AKIVA'S"] = true, ["AKKAD"] = true, ["AKKAD'S"] = true, ["AKKADIAN"] = true, ["AKKADIAN'S"] = true, ["AKKADIANS"] = true, ["AKKERMAN"] = true, ["AKMOLINSK"] = true, ["AKRON"] = true, ["AKRON'S"] = true, ["AKSUM"] = true, ["AL"] = true, ["AL'S"] = true, ["ALA"] = true, ["ALABAMA"] = true, ["ALABAMA'S"] = true, ["ALABAMAN"] = true, ["ALABAMAN'S"] = true, ["ALABAMANS"] = true, ["ALABAMIAN"] = true, ["ALABAMIAN'S"] = true, ["ALABAMIANS"] = true, ["ALADDIN"] = true, ["ALADDIN'S"] = true, ["ALAGEZ"] = true, ["ALAGOAS"] = true, ["ALAI"] = true, ["ALAI'S"] = true, ["ALAMEIN"] = true, ["ALAMO"] = true, ["ALAMO'S"] = true, ["ALAMOGORDO"] = true, ["ALAMOGORDO'S"] = true, ["ALAN"] = true, ["ALAN'S"] = true, ["ALANA"] = true, ["ALANA'S"] = true, ["ALAR"] = true, ["ALAR'S"] = true, ["ALARIC"] = true, ["ALARIC'S"] = true, ["ALAS"] = true, ["ALASKA"] = true, ["ALASKA'S"] = true, ["ALASKAN"] = true, ["ALASKAN'S"] = true, ["ALASKANS"] = true, ["ALB"] = true, ["ALBA"] = true, ["ALBA'S"] = true, ["ALBACETE"] = true, ["ALBAN"] = true, ["ALBAN'S"] = true, ["ALBANIA"] = true, ["ALBANIA'S"] = true, ["ALBANIAN"] = true, ["ALBANIAN'S"] = true, ["ALBANIANS"] = true, ["ALBANY"] = true, ["ALBANY'S"] = true, ["ALBEE"] = true, ["ALBEE'S"] = true, ["ALBEMARLE"] = true, ["ALBEMARLE'S"] = true, ["ALBERICH"] = true, ["ALBERIO"] = true, ["ALBERIO'S"] = true, ["ALBERT"] = true, ["ALBERT'S"] = true, ["ALBERTA"] = true, ["ALBERTA'S"] = true, ["ALBERTAN"] = true, ["ALBERTI"] = true, ["ALBERTO"] = true, ["ALBERTO'S"] = true, ["ALBI"] = true, ["ALBIGENSES"] = true, ["ALBIGENSIAN"] = true, ["ALBIGENSIAN'S"] = true, ["ALBINUS"] = true, ["ALBION"] = true, ["ALBION'S"] = true, ["ALBIREO"] = true, ["ALBIREO'S"] = true, ["ALBOIN"] = true, ["ALBORG"] = true, ["ALBORG'S"] = true, ["ALBRIGHT"] = true, ["ALBRIGHT'S"] = true, ["ALBUQUERQUE"] = true, ["ALBUQUERQUE'S"] = true, ["ALCAEUS"] = true, ["ALCAEUS'S"] = true, ["ALCAIC"] = true, ["ALCAIC'S"] = true, ["ALCAICS"] = true, ["ALCATRAZ"] = true, ["ALCATRAZ'S"] = true, ["ALCESTE"] = true, ["ALCESTIS"] = true, ["ALCESTIS'S"] = true, ["ALCIBIADES"] = true, ["ALCIBIADES'S"] = true, ["ALCIDES"] = true, ["ALCIDES'S"] = true, ["ALCINDOR"] = true, ["ALCINDOR'S"] = true, ["ALCMENA"] = true, ["ALCMENA'S"] = true, ["ALCMENE"] = true, ["ALCOA"] = true, ["ALCOA'S"] = true, ["ALCOR"] = true, ["ALCOR'S"] = true, ["ALCORAN"] = true, ["ALCOTT"] = true, ["ALCOTT'S"] = true, ["ALCUIN"] = true, ["ALCUIN'S"] = true, ["ALCYONE"] = true, ["ALCYONE'S"] = true, ["ALD"] = true, ["ALDABRA"] = true, ["ALDABRA'S"] = true, ["ALDAN"] = true, ["ALDAN'S"] = true, ["ALDEBARAN"] = true, ["ALDEBARAN'S"] = true, ["ALDEN"] = true, ["ALDEN'S"] = true, ["ALDERAMIN"] = true, ["ALDERAMIN'S"] = true, ["ALDERNEY"] = true, ["ALDERSHOT"] = true, ["ALDINE"] = true, ["ALDO"] = true, ["ALDO'S"] = true, ["ALDRIN"] = true, ["ALDRIN'S"] = true, ["ALEC"] = true, ["ALEC'S"] = true, ["ALECTO"] = true, ["ALEICHEM"] = true, ["ALEICHEM'S"] = true, ["ALEJANDRA"] = true, ["ALEJANDRA'S"] = true, ["ALEJANDRO"] = true, ["ALEJANDRO'S"] = true, ["ALEKSANDROPOL"] = true, ["ALEKSANDROVSK"] = true, ["ALEMANNI"] = true, ["ALEMANNIC"] = true, ["ALEMBERT"] = true, ["ALEMBERT'S"] = true, ["ALEPPO"] = true, ["ALEPPO'S"] = true, ["ALESSANDRIA"] = true, ["ALEUT"] = true, ["ALEUT'S"] = true, ["ALEUTIAN"] = true, ["ALEUTIAN'S"] = true, ["ALEUTIANS"] = true, ["ALEUTS"] = true, ["ALEX"] = true, ["ALEX'S"] = true, ["ALEXANDER"] = true, ["ALEXANDER'S"] = true, ["ALEXANDERS"] = true, ["ALEXANDRA"] = true, ["ALEXANDRA'S"] = true, ["ALEXANDRETTA"] = true, ["ALEXANDRIA"] = true, ["ALEXANDRIA'S"] = true, ["ALEXANDRIAN"] = true, ["ALEXANDRINE"] = true, ["ALEXANDRINE'S"] = true, ["ALEXANDRINES"] = true, ["ALEXEI"] = true, ["ALEXEI'S"] = true, ["ALEXIS"] = true, ["ALEXIS'S"] = true, ["ALFIERI"] = true, ["ALFONSO"] = true, ["ALFONSO'S"] = true, ["ALFONZO"] = true, ["ALFONZO'S"] = true, ["ALFORD"] = true, ["ALFORD'S"] = true, ["ALFRED"] = true, ["ALFRED'S"] = true, ["ALFREDA"] = true, ["ALFREDA'S"] = true, ["ALFREDO"] = true, ["ALFREDO'S"] = true, ["ALG"] = true, ["ALGECIRAS"] = true, ["ALGENIB"] = true, ["ALGENIB'S"] = true, ["ALGER"] = true, ["ALGER'S"] = true, ["ALGERIA"] = true, ["ALGERIA'S"] = true, ["ALGERIAN"] = true, ["ALGERIAN'S"] = true, ["ALGERIANS"] = true, ["ALGERINE"] = true, ["ALGERNON"] = true, ["ALGERNON'S"] = true, ["ALGIEBA"] = true, ["ALGIEBA'S"] = true, ["ALGIERS"] = true, ["ALGIERS'S"] = true, ["ALGOL"] = true, ["ALGOL'S"] = true, ["ALGONKIAN"] = true, ["ALGONKIAN'S"] = true, ["ALGONKIANS"] = true, ["ALGONKIN"] = true, ["ALGONKIN'S"] = true, ["ALGONKINS"] = true, ["ALGONQUIAN"] = true, ["ALGONQUIAN'S"] = true, ["ALGONQUIANS"] = true, ["ALGONQUIN"] = true, ["ALGONQUIN'S"] = true, ["ALGONQUINS"] = true, ["ALHAMBRA"] = true, ["ALHAMBRA'S"] = true, ["ALHENA"] = true, ["ALHENA'S"] = true, ["ALI"] = true, ["ALI'S"] = true, ["ALICANTE"] = true, ["ALICE"] = true, ["ALICE'S"] = true, ["ALICIA"] = true, ["ALICIA'S"] = true, ["ALIGARH"] = true, ["ALIGHIERI"] = true, ["ALIGHIERI'S"] = true, ["ALINE"] = true, ["ALINE'S"] = true, ["ALIOTH"] = true, ["ALIOTH'S"] = true, ["ALISA"] = true, ["ALISA'S"] = true, ["ALISHA"] = true, ["ALISHA'S"] = true, ["ALISON"] = true, ["ALISON'S"] = true, ["ALISSA"] = true, ["ALISSA'S"] = true, ["ALISTAIR"] = true, ["ALISTAIR'S"] = true, ["ALKAID"] = true, ["ALKAID'S"] = true, ["ALKMAAR"] = true, ["ALKORAN"] = true, ["ALLAH"] = true, ["ALLAH'S"] = true, ["ALLAHABAD"] = true, ["ALLAHABAD'S"] = true, ["ALLAN"] = true, ["ALLAN'S"] = true, ["ALLEGHENIES"] = true, ["ALLEGHENIES'S"] = true, ["ALLEGHENY"] = true, ["ALLEGHENY'S"] = true, ["ALLEGRA"] = true, ["ALLEGRA'S"] = true, ["ALLEN"] = true, ["ALLEN'S"] = true, ["ALLENBY"] = true, ["ALLENDE"] = true, ["ALLENDE'S"] = true, ["ALLENTOWN"] = true, ["ALLENTOWN'S"] = true, ["ALLHALLOWMAS"] = true, ["ALLHALLOWS"] = true, ["ALLHALLOWS'S"] = true, ["ALLHALLOWTIDE"] = true, ["ALLHALLOWTIDE'S"] = true, ["ALLHALLOWTIDES"] = true, ["ALLIE"] = true, ["ALLIE'S"] = true, ["ALLIER"] = true, ["ALLIES"] = true, ["ALLISON"] = true, ["ALLISON'S"] = true, ["ALLOWAY"] = true, ["ALLSTATE"] = true, ["ALLSTATE'S"] = true, ["ALLYN"] = true, ["ALLYN'S"] = true, ["ALLYSON"] = true, ["ALLYSON'S"] = true, ["ALMA"] = true, ["ALMA'S"] = true, ["ALMACH"] = true, ["ALMACH'S"] = true, ["ALMAGEST"] = true, ["ALMATY"] = true, ["ALMATY'S"] = true, ["ALMIGHTY"] = true, ["ALMIGHTY'S"] = true, ["ALMOHAD"] = true, ["ALMOHAD'S"] = true, ["ALMORAVID"] = true, ["ALMORAVID'S"] = true, ["ALNICO"] = true, ["ALNILAM"] = true, ["ALNILAM'S"] = true, ["ALNITAK"] = true, ["ALNITAK'S"] = true, ["ALONZO"] = true, ["ALONZO'S"] = true, ["ALOST"] = true, ["ALOYSIUS"] = true, ["ALOYSIUS'S"] = true, ["ALPERT"] = true, ["ALPERT'S"] = true, ["ALPHA"] = true, ["ALPHARD"] = true, ["ALPHARD'S"] = true, ["ALPHECCA"] = true, ["ALPHECCA'S"] = true, ["ALPHERATZ"] = true, ["ALPHERATZ'S"] = true, ["ALPHEUS"] = true, ["ALPHEUS'S"] = true, ["ALPHONSE"] = true, ["ALPHONSE'S"] = true, ["ALPHONSO"] = true, ["ALPHONSO'S"] = true, ["ALPHONSUS"] = true, ["ALPINE"] = true, ["ALPINE'S"] = true, ["ALPO"] = true, ["ALPO'S"] = true, ["ALPS"] = true, ["ALPS'S"] = true, ["ALSACE"] = true, ["ALSACE'S"] = true, ["ALSATIA"] = true, ["ALSATIA'S"] = true, ["ALSATIAN"] = true, ["ALSATIAN'S"] = true, ["ALSATIANS"] = true, ["ALSOP"] = true, ["ALSOP'S"] = true, ["ALSTON"] = true, ["ALSTON'S"] = true, ["ALTA"] = true, ["ALTA'S"] = true, ["ALTABA"] = true, ["ALTABA'S"] = true, ["ALTAI"] = true, ["ALTAI'S"] = true, ["ALTAIC"] = true, ["ALTAIC'S"] = true, ["ALTAIR"] = true, ["ALTAIR'S"] = true, ["ALTAMIRA"] = true, ["ALTAMIRA'S"] = true, ["ALTDORF"] = true, ["ALTDORFER"] = true, ["ALTHEA"] = true, ["ALTHEA'S"] = true, ["ALTHING"] = true, ["ALTIPLANO"] = true, ["ALTIPLANO'S"] = true, ["ALTMAN"] = true, ["ALTMAN'S"] = true, ["ALTOIDS"] = true, ["ALTOIDS'S"] = true, ["ALTON"] = true, ["ALTON'S"] = true, ["ALTONA"] = true, ["ALTOONA"] = true, ["ALTOONA'S"] = true, ["ALUDRA"] = true, ["ALUDRA'S"] = true, ["ALUNDUM"] = true, ["ALVA"] = true, ["ALVA'S"] = true, ["ALVAH"] = true, ["ALVAH'S"] = true, ["ALVARADO"] = true, ["ALVARADO'S"] = true, ["ALVAREZ"] = true, ["ALVAREZ'S"] = true, ["ALVARO"] = true, ["ALVARO'S"] = true, ["ALVIN"] = true, ["ALVIN'S"] = true, ["ALYCE"] = true, ["ALYCE'S"] = true, ["ALYSON"] = true, ["ALYSON'S"] = true, ["ALYSSA"] = true, ["ALYSSA'S"] = true, ["ALZHEIMER"] = true, ["ALZHEIMER'S"] = true, ["AM"] = true, ["AM'S"] = true, ["AMADEUS"] = true, ["AMADEUS'S"] = true, ["AMADO"] = true, ["AMADO'S"] = true, ["AMAGASAKI"] = true, ["AMALEKITE"] = true, ["AMALIA"] = true, ["AMALIA'S"] = true, ["AMANDA"] = true, ["AMANDA'S"] = true, ["AMARILLO"] = true, ["AMARILLO'S"] = true, ["AMARU"] = true, ["AMARU'S"] = true, ["AMARYLLIS"] = true, ["AMARYLLIS'S"] = true, ["AMATERASU"] = true, ["AMATERASU'S"] = true, ["AMATI"] = true, ["AMATI'S"] = true, ["AMAZON"] = true, ["AMAZON'S"] = true, ["AMAZONAS"] = true, ["AMAZONIA"] = true, ["AMAZONIA'S"] = true, ["AMAZONIAN"] = true, ["AMAZONS"] = true, ["AMBALA"] = true, ["AMBER"] = true, ["AMBER'S"] = true, ["AMBOINA"] = true, ["AMBOISE"] = true, ["AMBROSE"] = true, ["AMBROSE'S"] = true, ["AMELIA"] = true, ["AMELIA'S"] = true, ["AMEN"] = true, ["AMEN'S"] = true, ["AMENHOTEP"] = true, ["AMENHOTEP'S"] = true, ["AMER"] = true, ["AMERASIAN"] = true, ["AMERASIAN'S"] = true, ["AMERICA"] = true, ["AMERICA'S"] = true, ["AMERICAN"] = true, ["AMERICAN'S"] = true, ["AMERICANA"] = true,
@@ -353,365 +868,3 @@ ValidWords = {
   ["YELLOWED"] = true, ["YELLOWER"] = true, ["YELLOWEST"] = true, ["YELLOWHAMMER"] = true, ["YELLOWHAMMERS"] = true, ["YELLOWING"] = true, ["YELLOWISH"] = true, ["YELLOWLEGS"] = true, ["YELLOWNESS"] = true, ["YELLOWNESS'S"] = true, ["YELLOWS"] = true, ["YELLOWTAIL"] = true, ["YELLOWTAILS"] = true, ["YELLOWTHROAT"] = true, ["YELLOWTHROATS"] = true, ["YELLOWWEED"] = true, ["YELLOWWOOD"] = true, ["YELLOWWOODS"] = true, ["YELLOWY"] = true, ["YELLS"] = true, ["YELP"] = true, ["YELP'S"] = true, ["YELPED"] = true, ["YELPING"] = true, ["YELPS"] = true, ["YEN"] = true, ["YEN'S"] = true, ["YENS"] = true, ["YENTA"] = true, ["YENTAS"] = true, ["YEOMAN"] = true, ["YEOMAN'S"] = true, ["YEOMANLY"] = true, ["YEOMANRY"] = true, ["YEOMANRY'S"] = true, ["YEOMEN"] = true, ["YEP"] = true, ["YEP'S"] = true, ["YEPS"] = true, ["YER"] = true, ["YES"] = true, ["YES'S"] = true, ["YESES"] = true, ["YESHIVA"] = true, ["YESHIVA'S"] = true, ["YESHIVAS"] = true, ["YESHIVOT"] = true, ["YESSED"] = true, ["YESSING"] = true, ["YEST"] = true, ["YESTER"] = true, ["YESTERDAY"] = true, ["YESTERDAY'S"] = true, ["YESTERDAYS"] = true, ["YESTERYEAR"] = true, ["YESTERYEAR'S"] = true, ["YESTREEN"] = true, ["YET"] = true, ["YETI"] = true, ["YETI'S"] = true, ["YETIS"] = true, ["YEW"] = true, ["YEW'S"] = true, ["YEWS"] = true, ["YID"] = true, ["YIDS"] = true, ["YIELD"] = true, ["YIELD'S"] = true, ["YIELDED"] = true, ["YIELDING"] = true, ["YIELDINGS"] = true, ["YIELDS"] = true, ["YIKES"] = true, ["YIN"] = true, ["YIN'S"] = true, ["YIP"] = true, ["YIP'S"] = true, ["YIPE"] = true, ["YIPPED"] = true, ["YIPPEE"] = true, ["YIPPIE"] = true, ["YIPPING"] = true, ["YIPS"] = true, ["YLEM"] = true, ["YO"] = true, ["YOB"] = true, ["YOBBO"] = true, ["YOBBOS"] = true, ["YOBS"] = true, ["YOD"] = true, ["YODEL"] = true, ["YODEL'S"] = true, ["YODELED"] = true, ["YODELER"] = true, ["YODELER'S"] = true, ["YODELERS"] = true, ["YODELING"] = true, ["YODELS"] = true, ["YODLE"] = true, ["YOGA"] = true, ["YOGA'S"] = true, ["YOGH"] = true, ["YOGI"] = true, ["YOGI'S"] = true, ["YOGIC"] = true, ["YOGINI"] = true, ["YOGIS"] = true, ["YOGURT"] = true, ["YOGURT'S"] = true, ["YOGURTS"] = true, ["YOICKS"] = true, ["YOKE"] = true, ["YOKE'S"] = true, ["YOKED"] = true, ["YOKEFELLOW"] = true, ["YOKEL"] = true, ["YOKEL'S"] = true, ["YOKELS"] = true, ["YOKES"] = true, ["YOKING"] = true, ["YOLK"] = true, ["YOLK'S"] = true, ["YOLKED"] = true, ["YOLKS"] = true, ["YON"] = true, ["YONDER"] = true, ["YONI"] = true, ["YONKS"] = true, ["YORE"] = true, ["YORE'S"] = true, ["YORK"] = true, ["YORKER"] = true, ["YORKERS"] = true, ["YOU"] = true, ["YOU'D"] = true, ["YOU'LL"] = true, ["YOU'RE"] = true, ["YOU'S"] = true, ["YOU'VE"] = true, ["YOUNG"] = true, ["YOUNG'S"] = true, ["YOUNGER"] = true, ["YOUNGEST"] = true, ["YOUNGISH"] = true, ["YOUNGLING"] = true, ["YOUNGSTER"] = true, ["YOUNGSTER'S"] = true, ["YOUNGSTERS"] = true, ["YOUNKER"] = true, ["YOUNKERS"] = true, ["YOUR"] = true, ["YOURS"] = true, ["YOURSELF"] = true, ["YOURSELVES"] = true, ["YOUS"] = true, ["YOUTH"] = true, ["YOUTH'S"] = true, ["YOUTHEN"] = true, ["YOUTHFUL"] = true, ["YOUTHFULLY"] = true, ["YOUTHFULNESS"] = true, ["YOUTHFULNESS'S"] = true, ["YOUTHS"] = true, ["YOW"] = true, ["YOWL"] = true, ["YOWL'S"] = true, ["YOWLED"] = true, ["YOWLING"] = true, ["YOWLS"] = true, ["YR"] = true, ["YRS"] = true, ["YTTERBIA"] = true, ["YTTERBITE"] = true, ["YTTERBIUM"] = true, ["YTTERBIUM'S"] = true, ["YTTRIA"] = true, ["YTTRIFEROUS"] = true, ["YTTRIUM"] = true, ["YTTRIUM'S"] = true, ["YUAN"] = true, ["YUAN'S"] = true, ["YUCCA"] = true, ["YUCCA'S"] = true, ["YUCCAS"] = true, ["YUCK"] = true, ["YUCK'S"] = true, ["YUCKED"] = true, ["YUCKIER"] = true, ["YUCKIEST"] = true, ["YUCKING"] = true, ["YUCKS"] = true, ["YUCKY"] = true, ["YUK"] = true, ["YUK'S"] = true, ["YUKKED"] = true, ["YUKKING"] = true, ["YUKKY"] = true, ["YUKS"] = true, ["YULAN"] = true, ["YULE"] = true, ["YULE'S"] = true, ["YULETIDE"] = true, ["YULETIDE'S"] = true, ["YUM"] = true, ["YUMMIER"] = true, ["YUMMIEST"] = true, ["YUMMY"] = true, ["YUP"] = true, ["YUP'S"] = true, ["YUPPIE"] = true, ["YUPPIE'S"] = true, ["YUPPIEDOM"] = true, ["YUPPIES"] = true, ["YUPPIFICATION"] = true, ["YUPPIFIED"] = true, ["YUPPIFIES"] = true, ["YUPPIFY"] = true, ["YUPPIFYING"] = true, ["YUPS"] = true, ["YURT"] = true, ["YURT'S"] = true, ["YURTS"] = true, ["YWIS"] = true, ["Z"] = true, ["ZABAGLIONE"] = true, ["ZABAGLIONES"] = true, ["ZAFFER"] = true, ["ZAFTIG"] = true, ["ZAIBATSU"] = true, ["ZAIRE"] = true, ["ZAIRES"] = true, ["ZAMIA"] = true, ["ZAMIAS"] = true, ["ZAMINDAR"] = true, ["ZANIER"] = true, ["ZANIES"] = true, ["ZANIEST"] = true, ["ZANILY"] = true, ["ZANINESS"] = true, ["ZANINESS'S"] = true, ["ZANTHOXYLUM"] = true, ["ZANY"] = true, ["ZANY'S"] = true, ["ZAP"] = true, ["ZAP'S"] = true, ["ZAPATEADO"] = true, ["ZAPPED"] = true, ["ZAPPER"] = true, ["ZAPPER'S"] = true, ["ZAPPERS"] = true, ["ZAPPING"] = true, ["ZAPPY"] = true, ["ZAPS"] = true, ["ZARATITE"] = true, ["ZAREBA"] = true, ["ZARF"] = true, ["ZARFS"] = true, ["ZARZUELA"] = true, ["ZAYIN"] = true, ["ZAYINS"] = true, ["ZAZEN"] = true, ["ZEAL"] = true, ["ZEAL'S"] = true, ["ZEALOT"] = true, ["ZEALOT'S"] = true, ["ZEALOTRY"] = true, ["ZEALOTRY'S"] = true, ["ZEALOTS"] = true, ["ZEALOUS"] = true, ["ZEALOUSLY"] = true, ["ZEALOUSNESS"] = true, ["ZEALOUSNESS'S"] = true, ["ZEBEC"] = true, ["ZEBRA"] = true, ["ZEBRA'S"] = true, ["ZEBRAS"] = true, ["ZEBRASS"] = true, ["ZEBRAWOOD"] = true, ["ZEBRAWOODS"] = true, ["ZEBU"] = true, ["ZEBU'S"] = true, ["ZEBUS"] = true, ["ZECCHINO"] = true, ["ZED"] = true, ["ZED'S"] = true, ["ZEDOARY"] = true, ["ZEDS"] = true, ["ZEE"] = true, ["ZEES"] = true, ["ZEITGEIST"] = true, ["ZEITGEIST'S"] = true, ["ZEITGEISTS"] = true, ["ZEMSTVO"] = true, ["ZEN"] = true, ["ZENANA"] = true, ["ZENITH"] = true, ["ZENITH'S"] = true, ["ZENITHAL"] = true, ["ZENITHS"] = true, ["ZENNED"] = true, ["ZENS"] = true, ["ZEOLITE"] = true, ["ZEOLITES"] = true, ["ZEPHYR"] = true, ["ZEPHYR'S"] = true, ["ZEPHYRS"] = true, ["ZEPPELIN"] = true, ["ZEPPELIN'S"] = true, ["ZEPPELINS"] = true, ["ZERO"] = true, ["ZERO'S"] = true, ["ZEROED"] = true, ["ZEROES"] = true, ["ZEROING"] = true, ["ZEROS"] = true, ["ZEROTH"] = true, ["ZEST"] = true, ["ZEST'S"] = true, ["ZESTFUL"] = true, ["ZESTFULLY"] = true, ["ZESTFULNESS"] = true, ["ZESTFULNESS'S"] = true, ["ZESTIER"] = true, ["ZESTIEST"] = true, ["ZESTS"] = true, ["ZESTY"] = true, ["ZETA"] = true, ["ZETA'S"] = true, ["ZETAS"] = true, ["ZEUGMA"] = true, ["ZEUGMAS"] = true, ["ZEUGMATIC"] = true, ["ZIBELINE"] = true, ["ZIBET"] = true, ["ZIDOVUDINE"] = true, ["ZIDOVUDINES"] = true, ["ZIG"] = true, ["ZIGGURAT"] = true, ["ZIGS"] = true, ["ZIGZAG"] = true, ["ZIGZAG'S"] = true, ["ZIGZAGGED"] = true, ["ZIGZAGGER"] = true, ["ZIGZAGGING"] = true, ["ZIGZAGS"] = true, ["ZILCH"] = true, ["ZILCH'S"] = true, ["ZILLION"] = true, ["ZILLION'S"] = true, ["ZILLIONS"] = true, ["ZINC"] = true, ["ZINC'S"] = true, ["ZINCATE"] = true, ["ZINCIFEROUS"] = true, ["ZINCKED"] = true, ["ZINCKING"] = true, ["ZINCOGRAPH"] = true, ["ZINCOGRAPHY"] = true, ["ZINCS"] = true, ["ZINE"] = true, ["ZINES"] = true, ["ZINFANDEL"] = true, ["ZINFANDEL'S"] = true, ["ZING"] = true, ["ZING'S"] = true, ["ZINGARO"] = true, ["ZINGED"] = true, ["ZINGER"] = true, ["ZINGER'S"] = true, ["ZINGERS"] = true, ["ZINGIER"] = true, ["ZINGIEST"] = true, ["ZINGING"] = true, ["ZINGS"] = true, ["ZINGY"] = true, ["ZINKENITE"] = true, ["ZINKENITES"] = true, ["ZINNIA"] = true, ["ZINNIA'S"] = true, ["ZINNIAS"] = true, ["ZIP"] = true, ["ZIP'S"] = true, ["ZIPPED"] = true, ["ZIPPER"] = true, ["ZIPPER'S"] = true, ["ZIPPERED"] = true, ["ZIPPERING"] = true, ["ZIPPERS"] = true, ["ZIPPIER"] = true, ["ZIPPIEST"] = true, ["ZIPPING"] = true, ["ZIPPY"] = true, ["ZIPS"] = true, ["ZIRCON"] = true, ["ZIRCON'S"] = true, ["ZIRCONIA"] = true, ["ZIRCONIAS"] = true, ["ZIRCONIUM"] = true, ["ZIRCONIUM'S"] = true, ["ZIRCONS"] = true, ["ZIT"] = true, ["ZIT'S"] = true, ["ZITHER"] = true, ["ZITHER'S"] = true, ["ZITHERIST"] = true, ["ZITHERS"] = true, ["ZITI"] = true, ["ZITIS"] = true, ["ZITS"] = true, ["ZIZITH"] = true, ["ZLOTIES"] = true, ["ZLOTY"] = true, ["ZLOTY'S"] = true, ["ZLOTYS"] = true, ["ZOA"] = true, ["ZODIAC"] = true, ["ZODIAC'S"] = true, ["ZODIACAL"] = true, ["ZODIACS"] = true, ["ZOFTIG"] = true, ["ZOMBIE"] = true, ["ZOMBIE'S"] = true, ["ZOMBIELIKE"] = true, ["ZOMBIES"] = true, ["ZONAL"] = true, ["ZONALLY"] = true, ["ZONATE"] = true, ["ZONATION"] = true, ["ZONE"] = true, ["ZONE'S"] = true, ["ZONED"] = true, ["ZONES"] = true, ["ZONING"] = true, ["ZONING'S"] = true, ["ZONK"] = true, ["ZONKED"] = true, ["ZOO"] = true, ["ZOO'S"] = true, ["ZOOCHEMISTRY"] = true, ["ZOOCHORE"] = true, ["ZOOGEOGRAPHER"] = true, ["ZOOGEOGRAPHIC"] = true, ["ZOOGEOGRAPHICAL"] = true, ["ZOOGEOGRAPHY"] = true, ["ZOOGLEA"] = true, ["ZOOGRAPHY"] = true, ["ZOOID"] = true, ["ZOOIDS"] = true, ["ZOOKEEPER"] = true, ["ZOOKEEPER'S"] = true, ["ZOOKEEPERS"] = true, ["ZOOL"] = true, ["ZOOLATRIES"] = true, ["ZOOLATRY"] = true, ["ZOOLOGIC"] = true, ["ZOOLOGICAL"] = true, ["ZOOLOGICALLY"] = true, ["ZOOLOGIST"] = true, ["ZOOLOGIST'S"] = true, ["ZOOLOGISTS"] = true, ["ZOOLOGY"] = true, ["ZOOLOGY'S"] = true, ["ZOOM"] = true, ["ZOOM'S"] = true, ["ZOOMED"] = true, ["ZOOMETRY"] = true, ["ZOOMING"] = true, ["ZOOMORPHIC"] = true, ["ZOOMORPHISM"] = true, ["ZOOMS"] = true, ["ZOON"] = true, ["ZOONOSES"] = true, ["ZOONOSIS"] = true, ["ZOOPHILIA"] = true, ["ZOOPHILOUS"] = true, ["ZOOPHOBIA"] = true, ["ZOOPHOBIAS"] = true, ["ZOOPHYTE"] = true, ["ZOOPHYTE'S"] = true, ["ZOOPHYTES"] = true, ["ZOOPHYTIC"] = true, ["ZOOPLANKTON"] = true, ["ZOOPLANKTONS"] = true, ["ZOOPLASTY"] = true, ["ZOOS"] = true, ["ZOOSPERM"] = true, ["ZOOSPORANGIUM"] = true, ["ZOOSPORE"] = true, ["ZOOSPORES"] = true, ["ZOOTECHNICS"] = true, ["ZOOTOMY"] = true, ["ZOOTOXIN"] = true, ["ZOOTSUITER"] = true, ["ZORCH"] = true, ["ZORIL"] = true, ["ZORILS"] = true, ["ZOSTER"] = true, ["ZOSTERS"] = true, ["ZOUNDS"] = true, ["ZOYSIA"] = true,
   ["ZOYSIAS"] = true, ["ZUCCHETTO"] = true, ["ZUCCHINI"] = true, ["ZUCCHINI'S"] = true, ["ZUCCHINIS"] = true, ["ZUGZWANG"] = true, ["ZWIEBACK"] = true, ["ZWIEBACK'S"] = true, ["ZYDECO"] = true, ["ZYDECO'S"] = true, ["ZYGAPOPHYSIS"] = true, ["ZYGODACTYL"] = true, ["ZYGOMA"] = true, ["ZYGOMAS"] = true, ["ZYGOPHYLLACEOUS"] = true, ["ZYGOPHYTE"] = true, ["ZYGOSES"] = true, ["ZYGOSIS"] = true, ["ZYGOSPORE"] = true, ["ZYGOTE"] = true, ["ZYGOTE'S"] = true, ["ZYGOTENE"] = true, ["ZYGOTENES"] = true, ["ZYGOTES"] = true, ["ZYGOTIC"] = true, ["ZYMASE"] = true, ["ZYMASES"] = true, ["ZYMOGEN"] = true, ["ZYMOGENESIS"] = true, ["ZYMOGENIC"] = true, ["ZYMOLYSES"] = true, ["ZYMOLYSIS"] = true, ["ZYMOMETER"] = true, ["ZYMOSES"] = true, ["ZYMOSIS"] = true, ["ZYMOTIC"] = true, ["ZYMURGY"] = true, ["ZYMURGY'S"] = true, ["ÅNGSTRöM"] = true, ["ÅNGSTRöM'S"] = true, ["ÌBERMENSCH"] = true, ["ÌBERMENSCH'S"] = true, ["ÌBERMENSCHEN"] = true, ["ÌBERMENSCHEN'S"] = true, ["éCLAIR"] = true, ["éCLAIR'S"] = true, ["éCLAIRCISSEMENT"] = true, ["éCLAIRS"] = true, ["éCLAT"] = true, ["éCLAT'S"] = true, ["éLAN"] = true, ["éLAN'S"] = true, ["éMIGRé"] = true, ["éMIGRé'S"] = true, ["éMIGRéS"] = true, ["éPéE"] = true, ["éPéE'S"] = true, ["éPéES"] = true, ["éTAGèRE"] = true, ["éTAGèRES"] = true, ["éTUDE"] = true, ["éTUDE'S"] = true, ["éTUDES"] = true, ["éTUI"] = true, ["éTUIS"] = true,
 }
-
-
--- Utility: Get table keys
-function table.keys(tbl)
-  local keys = {}
-  for k in pairs(tbl) do keys[#keys + 1] = k end
-  return keys
-end
-
--- Calculate Points Based on Letter Rarity
-function getLetterPoints(word)
-  local points = 0
-  for i = 1, #word do
-    local char = string.sub(word, i, i)
-    points = points + (LetterValues[char] or 1)
-  end
-  return points
-end
-
--- Initialize Letters (Random A-Z)
-function generateLetters()
-  local pool = {}
-  local alphabet = {"A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z"}
-  for i = #alphabet, 2, -1 do
-    local j = math.random(i)
-    alphabet[i], alphabet[j] = alphabet[j], alphabet[i]
-  end
-  for i = 1, 10 do
-    pool[alphabet[i]] = 1
-  end
-  return pool
-end
-
--- Start New Round with Leaderboard Token Bonus
-function startRound()
-  if Round > 1 then
-    local sorted = {}
-    for p, score in pairs(Leaderboard) do
-      sorted[#sorted + 1] = { player = p, score = score }
-    end
-    table.sort(sorted, function(a, b) return a.score > b.score end)
-    if sorted[1] then Players[sorted[1].player].tokens = (Players[sorted[1].player].tokens or 0) + 5 end
-    if sorted[2] then Players[sorted[2].player].tokens = (Players[sorted[2].player].tokens or 0) + 3 end
-    if sorted[3] then Players[sorted[3].player].tokens = (Players[sorted[3].player].tokens or 0) + 1 end
-  end
-  
-  Letters = generateLetters()
-  Round = Round + 1
-  RoundStart = os.time()
-  for player, data in pairs(Players) do
-    data.words = {}
-  end
-  local letterStr = table.concat(table.keys(Letters), ", ")
-  ao.send({ Target = ao.env.Process.Id, Tags = { Action = "New-Round" }, Data = "Round " .. Round .. ": Letters = " .. letterStr })
-end
-
--- Validate Word
-function isValidWord(word)
-  local letterCounts = {}
-  for k, v in pairs(Letters) do letterCounts[k] = v end
-  word = string.upper(word)
-  if not ValidWords[word] then return false end
-  for i = 1, #word do
-    local char = string.sub(word, i, i)
-    if not letterCounts[char] or letterCounts[char] <= 0 then return false end
-    letterCounts[char] = letterCounts[char] - 1
-  end
-  return true
-end
-
--- Check if Username is Unique
-function isUsernameUnique(username, excludePlayer)
-  for player, data in pairs(Players) do
-    if player ~= excludePlayer and data.username and string.lower(data.username) == string.lower(username) then
-      return false
-    end
-  end
-  return true
-end
-
--- Get Display Name (Username or Truncated ID)
-function getDisplayName(player)
-  return Players[player].username or (player:sub(1, 10) .. "...")
-end
-
--- Get Player ID by Username
-function getPlayerByUsername(username)
-  for player, data in pairs(Players) do
-    if data.username and string.lower(data.username) == string.lower(username) then
-      return player
-    end
-  end
-  return nil
-end
-
--- Improved GUI Panel Helper
-function formatPanel(title, lines)
-  local width = 60
-  local panel = "┌── " .. title .. " " .. string.rep("─", width - #title - 5) .. "┐\n"
-  for _, line in ipairs(lines) do
-    local trimmed = line:sub(1, width - 4)
-    if #line > width - 4 then trimmed = trimmed:sub(1, width - 7) .. "..." end
-    panel = panel .. "│ " .. trimmed .. string.rep(" ", width - 4 - #trimmed) .. " │\n"
-  end
-  panel = panel .. "└" .. string.rep("─", width - 2) .. "┘"
-  return panel
-end
-
--- Join Game Handler with Username and Token Minting
-Handlers.add("JoinGame", Handlers.utils.hasMatchingTag("Action", "JoinGame"), function(msg)
-  local player = msg.From
-  local username = msg.Tags.Username
-  
-  if not Players[player] then
-    Players[player] = { score = 0, words = {}, tokens = 10, username = nil } -- Mint 10 tokens for new players
-    ao.send({ Target = ao.env.Process.Id, Tags = { Action = "Player-Joined" }, Data = "Player " .. player .. " joined" })
-  end
-  
-  if username then
-    username = username:sub(1, 15) -- Limit to 15 chars
-    if isUsernameUnique(username, player) then
-      Players[player].username = username
-    else
-      username = nil -- Revert to ID if taken
-    end
-  end
-  
-  local displayName = getDisplayName(player)
-  local lines = {
-    "Welcome to AO Word Wars!",
-    "Username: " .. displayName,
-    "Round: " .. Round,
-    "Letters: " .. table.concat(table.keys(Letters), ", "),
-    "Your Tokens: " .. Players[player].tokens .. " (10 minted!)",
-    "Commands:",
-    "  SubmitWord (Word=<word>)",
-    "  Bomb (Target=<player_id>)",
-    "  TransferTokens (Receiver=<username>, Amount=<number>)",
-    "  GetLeaderboard, GetState, GetHint, BuyHint",
-    "  ShowGUI",
-    "Join with Username: Send(Action='JoinGame', Username='<username>')"
-  }
-  ao.send({ Target = player, Tags = { Action = "JoinGameResponse" }, Data = formatPanel("Welcome", lines) })
-end)
-
--- Submit Word Handler
-Handlers.add("SubmitWord", Handlers.utils.hasMatchingTag("Action", "SubmitWord"), function(msg)
-  local player = msg.From
-  local word = msg.Tags.Word
-  
-  if not word or #word < 1 then
-    ao.send({ Target = player, Tags = { Action = "SubmitWordResponse" }, Data = formatPanel("Error", {"No word provided"}) })
-    return
-  end
-  
-  word = string.upper(word)
-  if not Players[player] then 
-    Players[player] = { score = 0, words = {}, tokens = 10, username = nil }
-  end
-  
-  if Players[player].words[word] then
-    ao.send({ Target = player, Tags = { Action = "SubmitWordResponse" }, Data = formatPanel("Error", {"Word already used this round: " .. word}) })
-    return
-  end
-  
-  if isValidWord(word) then
-    local basePoints = getLetterPoints(word)
-    local timeElapsed = os.time() - RoundStart
-    local speedBonus = (timeElapsed <= 10) and 2 or 0
-    local points = basePoints + speedBonus
-    local tokensEarned = points
-    Players[player].score = (Players[player].score or 0) + points
-    Players[player].tokens = (Players[player].tokens or 0) + tokensEarned
-    Players[player].words[word] = true
-    Leaderboard[player] = (Leaderboard[player] or 0) + points
-    local displayName = getDisplayName(player)
-    local lines = {
-      displayName .. " formed:",
-      "Word: " .. word,
-      "Points: +" .. points .. " (Base: " .. basePoints .. ", Bonus: " .. speedBonus .. ")",
-      "Tokens: +" .. tokensEarned,
-      "New Score: " .. Players[player].score,
-      "New Token Balance: " .. Players[player].tokens
-    }
-    ao.send({ Target = player, Tags = { Action = "SubmitWordResponse" }, Data = formatPanel("Success", lines) })
-  else
-    ao.send({ Target = player, Tags = { Action = "SubmitWordResponse" }, Data = formatPanel("Error", {"Invalid word: " .. word}) })
-  end
-end)
-
--- Bomb Handler
-Handlers.add("Bomb", Handlers.utils.hasMatchingTag("Action", "Bomb"), function(msg)
-  local player = msg.From
-  local target = msg.Tags.Target
-  if not Players[player] or not Players[target] or player == target then
-    ao.send({ Target = player, Tags = { Action = "BombResponse" }, Data = formatPanel("Error", {"Invalid player or target"}) })
-    return
-  end
-  if (Players[player].tokens or 0) < 5 then
-    ao.send({ Target = player, Tags = { Action = "BombResponse" }, Data = formatPanel("Error", {"Not enough tokens (need 5)"}) })
-    return
-  end
-  local lastWord = next(Players[target].words)
-  if lastWord then
-    local points = getLetterPoints(lastWord)
-    Players[target].score = math.max(0, Players[target].score - points)
-    Leaderboard[target] = math.max(0, Leaderboard[target] - points)
-    Players[target].words[lastWord] = nil
-    Players[player].tokens = Players[player].tokens - 5
-    local playerName = getDisplayName(player)
-    local targetName = getDisplayName(target)
-    local lines = {
-      playerName .. " bombed " .. targetName .. ":",
-      "Removed Word: " .. lastWord,
-      "Points Lost: " .. points,
-      "Tokens Spent: -5",
-      "New Token Balance: " .. Players[player].tokens
-    }
-    ao.send({ Target = player, Tags = { Action = "BombResponse" }, Data = formatPanel("Bomb Result", lines) })
-    ao.send({ Target = ao.env.Process.Id, Tags = { Action = "UpdateLeaderboard" }, Data = json.encode(Leaderboard) })
-  else
-    ao.send({ Target = player, Tags = { Action = "BombResponse" }, Data = formatPanel("Error", {"Target has no words to bomb"}) })
-  end
-end)
-
--- Transfer Tokens Handler
-Handlers.add("TransferTokens", Handlers.utils.hasMatchingTag("Action", "TransferTokens"), function(msg)
-  local player = msg.From
-  local receiverUsername = msg.Tags.Receiver
-  local amount = tonumber(msg.Tags.Amount)
-  
-  if not receiverUsername or not amount or amount <= 0 then
-    ao.send({ Target = player, Tags = { Action = "TransferResponse" }, Data = formatPanel("Error", {"Invalid receiver or amount"}) })
-    return
-  end
-  
-  local receiver = getPlayerByUsername(receiverUsername)
-  if not receiver or receiver == player then
-    ao.send({ Target = player, Tags = { Action = "TransferResponse" }, Data = formatPanel("Error", {"Receiver not found or invalid"}) })
-    return
-  end
-  
-  if (Players[player].tokens or 0) < amount then
-    ao.send({ Target = player, Tags = { Action = "TransferResponse" }, Data = formatPanel("Error", {"Not enough tokens"}) })
-    return
-  end
-  
-  Players[player].tokens = Players[player].tokens - amount
-  Players[receiver].tokens = (Players[receiver].tokens or 0) + amount
-  local senderName = getDisplayName(player)
-  local receiverName = getDisplayName(receiver)
-  local lines = {
-    senderName .. " transferred:",
-    "To: " .. receiverName,
-    "Amount: " .. amount .. " tokens",
-    "New Balance: " .. Players[player].tokens
-  }
-  ao.send({ Target = player, Tags = { Action = "TransferResponse" }, Data = formatPanel("Transfer Success", lines) })
-  ao.send({ Target = receiver, Tags = { Action = "TransferReceived" }, Data = formatPanel("Tokens Received", {senderName .. " sent you " .. amount .. " tokens", "New Balance: " .. Players[receiver].tokens}) })
-end)
-
--- Get Leaderboard Handler
-Handlers.add("GetLeaderboard", Handlers.utils.hasMatchingTag("Action", "GetLeaderboard"), function(msg)
-  local player = msg.From
-  local sorted = {}
-  for p, score in pairs(Leaderboard) do
-    sorted[#sorted + 1] = { player = p, score = score, tokens = Players[p].tokens or 0 }
-  end
-  table.sort(sorted, function(a, b) return a.score > b.score end)
-  local lines = {}
-  for i = 1, math.min(5, #sorted) do
-    local name = getDisplayName(sorted[i].player)
-    lines[#lines + 1] = i .. ". " .. name .. ": " .. sorted[i].score .. " pts, " .. sorted[i].tokens .. " tokens"
-  end
-  ao.send({ Target = player, Tags = { Action = "LeaderboardResponse" }, Data = formatPanel("Leaderboard", lines) })
-end)
-
--- Get State Handler
-Handlers.add("GetState", Handlers.utils.hasMatchingTag("Action", "GetState"), function(msg)
-  local player = msg.From
-  local lines = {
-    "Round: " .. Round,
-    "Letters: " .. table.concat(table.keys(Letters), ", "),
-    "Players:"
-  }
-  for p, data in pairs(Players) do
-    local name = getDisplayName(p)
-    local words = table.concat(table.keys(data.words), ", ")
-    lines[#lines + 1] = name .. ": " .. data.score .. " pts, " .. (data.tokens or 0) .. " tokens"
-    lines[#lines + 1] = "  Words: " .. (words:len() > 30 and words:sub(1, 27) .. "..." or words)
-  end
-  ao.send({ Target = player, Tags = { Action = "StateResponse" }, Data = formatPanel("Game State", lines) })
-end)
-
--- Get Hint Handler
-Handlers.add("GetHint", Handlers.utils.hasMatchingTag("Action", "GetHint"), function(msg)
-  local player = msg.From
-  local validOptions = {}
-  for word in pairs(ValidWords) do
-    if isValidWord(word) then
-      validOptions[#validOptions + 1] = word
-    end
-  end
-  if #validOptions > 0 then
-    local hint = validOptions[math.random(1, #validOptions)]
-    ao.send({ Target = player, Tags = { Action = "HintResponse" }, Data = formatPanel("Hint", {"Suggested Word: " .. hint}) })
-  else
-    ao.send({ Target = player, Tags = { Action = "HintResponse" }, Data = formatPanel("Hint", {"No valid words found"}) })
-  end
-end)
-
--- Buy Hint Handler
-Handlers.add("BuyHint", Handlers.utils.hasMatchingTag("Action", "BuyHint"), function(msg)
-  local player = msg.From
-  if (Players[player].tokens or 0) < 2 then
-    ao.send({ Target = player, Tags = { Action = "BuyHintResponse" }, Data = formatPanel("Error", {"Not enough tokens (need 2)"}) })
-    return
-  end
-  local validOptions = {}
-  for word in pairs(ValidWords) do
-    if isValidWord(word) then
-      validOptions[#validOptions + 1] = word
-    end
-  end
-  if #validOptions > 0 then
-    local hint = validOptions[math.random(1, #validOptions)]
-    Players[player].tokens = Players[player].tokens - 2
-    local lines = {
-      "Suggested Word: " .. hint,
-      "Tokens Spent: -2",
-      "New Token Balance: " .. Players[player].tokens
-    }
-    ao.send({ Target = player, Tags = { Action = "BuyHintResponse" }, Data = formatPanel("Purchased Hint", lines) })
-  else
-    ao.send({ Target = player, Tags = { Action = "BuyHintResponse" }, Data = formatPanel("Error", {"No valid words found"}) })
-  end
-end)
-
--- Show GUI Handler
-Handlers.add("ShowGUI", Handlers.utils.hasMatchingTag("Action", "ShowGUI"), function(msg)
-  local player = msg.From
-  local displayName = getDisplayName(player)
-  local lines = {
-    "Round: " .. Round,
-    "Letters: " .. table.concat(table.keys(Letters), ", "),
-    "Username: " .. displayName,
-    "Your Score: " .. (Players[player].score or 0),
-    "Your Tokens: " .. (Players[player].tokens or 0),
-    "Your Words: " .. table.concat(table.keys(Players[player].words), ", "),
-    "Commands:",
-    "  SubmitWord (Word=<word>)",
-    "  Bomb (Target=<player_id>)",
-    "  TransferTokens (Receiver=<username>, Amount=<number>)",
-    "  GetLeaderboard, GetState, GetHint, BuyHint"
-  }
-  ao.send({ Target = player, Tags = { Action = "GUIResponse" }, Data = formatPanel("AO Word Wars", lines) })
-end)
-
--- Initialize with Cron
-startRound()
-ao.send({ Target = ao.env.Process.Id, Tags = { Action = "Cron", Interval = "1m" } })
-Handlers.add("Cron", Handlers.utils.hasMatchingTag("Action", "Cron"), startRound)

@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Word Wars</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      font-family: 'Orbitron', monospace;
+    }
+
+    body {
+      background: #283618; /* Deep green */
+      color: #fefae0; /* Cream */
+      overflow-x: hidden;
+      min-height: 100vh;
+      position: relative;
+    }
+
+    #particles {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: transparent;
+      z-index: -1;
+      animation: particleFade 20s infinite;
+    }
+
+    @keyframes particleFade {
+      0%, 100% { opacity: 0.3; }
+      50% { opacity: 0.1; }
+    }
+
+    #game-container {
+      max-width: 1600px; /* Wider for four cards */
+      margin: 20px auto;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      align-items: center;
+      position: relative;
+      z-index: 1;
+    }
+
+    h1 {
+      font-size: 3rem;
+      color: #dda15e; /* Light orange */
+      text-shadow: 0 0 10px #dda15e, 0 0 20px #dda15e;
+      animation: glow 2s ease-in-out infinite;
+    }
+
+    @keyframes glow {
+      0%, 100% { text-shadow: 0 0 10px #dda15e, 0 0 20px #dda15e; }
+      50% { text-shadow: 0 0 20px #dda15e, 0 0 30px #dda15e; }
+    }
+
+    .wallet-section {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      background: #606c38; /* Pine */
+      padding: 15px;
+      border-radius: 10px;
+      border: 1px solid #dda15e; /* Light orange */
+      width: 100%;
+      max-width: 400px;
+      justify-content: center;
+    }
+
+    #status {
+      font-size: 1rem;
+      color: #bc6c25; /* Burnt orange */
+      text-shadow: 0 0 5px #bc6c25;
+    }
+
+    #game-area {
+      display: none;
+      width: 100%;
+      flex-wrap: nowrap; /* Single row */
+      justify-content: center;
+      gap: 20px;
+    }
+
+    .card, .rules-card, .leaderboard-card {
+      background: #606c38; /* Pine */
+      border: 1px solid #dda15e; /* Light orange */
+      border-radius: 15px;
+      padding: 20px;
+      flex: 1; /* Equal width */
+      min-width: 280px; /* Prevent squeezing */
+      max-width: 360px; /* Consistent size */
+      box-shadow: 0 0 15px rgba(221, 161, 94, 0.3); /* Light orange shadow */
+      transition: transform 0.3s, box-shadow 0.3s;
+    }
+
+    .card:hover, .rules-card:hover, .leaderboard-card:hover {
+      transform: translateY(-5px);
+      box-shadow: 0 0 25px rgba(221, 161, 94, 0.5);
+    }
+
+    .card h3, .rules-card h3, .leaderboard-card h3 {
+      color: #bc6c25; /* Burnt orange */
+      margin-bottom: 15px;
+      text-shadow: 0 0 5px #bc6c25;
+    }
+
+    .game-state {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .state-item {
+      display: flex;
+      justify-content: space-between;
+      font-size: 1rem;
+    }
+
+    .state-item span:first-child {
+      color: #fefae0; /* Cream */
+    }
+
+    .state-item span:last-child {
+      color: #dda15e; /* Light orange */
+    }
+
+    .progress-bar {
+      background: #283618; /* Deep green */
+      border-radius: 5px;
+      height: 10px;
+      margin-top: 5px;
+      overflow: hidden;
+    }
+
+    .progress {
+      background: linear-gradient(90deg, #dda15e, #bc6c25); /* Light to burnt orange */
+      height: 100%;
+      transition: width 0.5s ease;
+    }
+
+    input[type="text"], input[type="number"] {
+      width: 100%;
+      padding: 10px;
+      margin: 10px 0;
+      background: #283618; /* Deep green */
+      border: 1px solid #dda15e; /* Light orange */
+      border-radius: 5px;
+      color: #fefae0; /* Cream */
+      font-size: 1rem;
+    }
+
+    input:focus {
+      outline: none;
+      border-color: #bc6c25; /* Burnt orange */
+      box-shadow: 0 0 10px #bc6c25;
+    }
+
+    button {
+      width: 100%;
+      padding: 12px;
+      background: linear-gradient(45deg, #dda15e, #bc6c25); /* Light to burnt orange */
+      border: none;
+      border-radius: 5px;
+      color: #283618; /* Deep green */
+      font-size: 1rem;
+      cursor: pointer;
+      transition: transform 0.2s, box-shadow 0.2s;
+      text-transform: uppercase;
+      font-weight: bold;
+    }
+
+    button:hover:not(:disabled) {
+      transform: scale(1.05);
+      box-shadow: 0 0 15px rgba(221, 161, 94, 0.7);
+    }
+
+    button:disabled {
+      background: #606c38; /* Pine */
+      cursor: not-allowed;
+      opacity: 0.6;
+    }
+
+    /* Refresh Button */
+    .refresh-button {
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      background: #283618; /* Deep green */
+      border: 1px solid #dda15e; /* Light orange */
+      border-radius: 50%;
+      color: #fefae0; /* Cream */
+      font-size: 1rem;
+      line-height: 30px;
+      text-align: center;
+      cursor: pointer;
+      transition: background 0.3s, transform 0.2s, box-shadow 0.2s;
+      margin-left: auto;
+    }
+
+    .refresh-button:hover {
+      background: #dda15e; /* Light orange */
+      color: #283618; /* Deep green */
+      transform: rotate(360deg);
+      box-shadow: 0 0 10px rgba(221, 161, 94, 0.7);
+    }
+
+    /* Rules Section */
+    .rules-card ul {
+      list-style: none;
+      font-size: 1rem;
+      color: #fefae0; /* Cream */
+    }
+
+    .rules-card li {
+      margin-bottom: 10px;
+      position: relative;
+      padding-left: 20px;
+    }
+
+    .rules-card li:before {
+      content: '>';
+      color: #dda15e; /* Light orange */
+      position: absolute;
+      left: 0;
+      font-weight: bold;
+    }
+
+    /* Leaderboard Section */
+    .leaderboard-card {
+      width: 100%;
+    }
+
+    .leaderboard-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 15px;
+    }
+
+    .leaderboard-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 1rem;
+      color: #fefae0; /* Cream */
+    }
+
+    .leaderboard-table th,
+    .leaderboard-table td {
+      padding: 10px;
+      text-align: left;
+      border-bottom: 1px solid #dda15e; /* Light orange */
+    }
+
+    .leaderboard-table th {
+      background: linear-gradient(45deg, #dda15e, #bc6c25); /* Light to burnt orange */
+      color: #283618; /* Deep green */
+      text-transform: uppercase;
+      font-weight: bold;
+    }
+
+    .leaderboard-table tr:nth-child(even) {
+      background: rgba(221, 161, 94, 0.1); /* Light orange tint */
+    }
+
+    .leaderboard-table tr:hover {
+      background: rgba(221, 161, 94, 0.2);
+      cursor: pointer;
+    }
+
+    .leaderboard-table td {
+      color: #fefae0; /* Cream */
+    }
+
+    .leaderboard-error {
+      color: #bc6c25; /* Burnt orange */
+      text-align: center;
+      font-size: 1rem;
+      margin: 10px 0;
+    }
+
+    #response {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      background: #606c38; /* Pine */
+      padding: 15px 20px;
+      border-radius: 10px;
+      max-width: 300px;
+      font-size: 1rem;
+      opacity: 0;
+      transform: translateY(20px);
+      transition: opacity 0.3s, transform 0.3s;
+      z-index: 1000;
+    }
+
+    #response.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    #response.correct { border: 1px solid #dda15e; color: #dda15e; } /* Light orange */
+    #response.reused { border: 1px solid #fefae0; color: #fefae0; } /* Cream */
+    #response.used-by-other { border: 1px solid #bc6c25; color: #bc6c25; } /* Burnt orange */
+    #response.invalid { border: 1px solid #bc6c25; color: #bc6c25; } /* Burnt orange */
+
+    @media (max-width: 600px) {
+      h1 { font-size: 2rem; }
+      #game-container { padding: 10px; }
+      #game-area {
+        flex-direction: column; /* Stack cards */
+        align-items: center;
+      }
+      .card, .rules-card, .leaderboard-card {
+        max-width: 100%; /* Full-width on mobile */
+        min-width: 0; /* Allow full stretch */
+      }
+      #response { max-width: 80%; right: 10px; bottom: 10px; }
+      .leaderboard-table th, .leaderboard-table td { padding: 8px; font-size: 0.9rem; }
+      .refresh-button { width: 24px; height: 24px; font-size: 0.9rem; line-height: 24px; }
+    }
+
+    @media (min-width: 601px) {
+      #game-area {
+        display: flex; /* Ensure flex row */
+        flex-direction: row;
+        flex-wrap: nowrap; /* Force single row */
+        justify-content: center;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="particles"></div>
+  <div id="game-container">
+    <h1>Word Wars</h1>
+    <div class="wallet-section">
+      <button id="connect-wallet">Connect Wallet</button>
+      <button id="disconnect-wallet" style="display: none;">Disconnect Wallet</button>
+      <span id="status">Not connected</span>
+    </div>
+    <div id="game-area">
+      <div class="card game-state">
+        <h3>Game State</h3>
+        <div class="state-item">
+          <span>Round:</span>
+          <span id="round-display">None</span>
+        </div>
+        <div class="state-item">
+          <span>Letters:</span>
+          <span id="letters-display">None</span>
+        </div>
+        <div class="state-item">
+          <span>Points:</span>
+          <span id="points-display">0</span>
+        </div>
+        <div class="progress-bar">
+          <div class="progress" id="points-progress" style="width: 0%;"></div>
+        </div>
+        <div class="state-item">
+          <span>Tokens:</span>
+          <span id="tokens-display">0</span>
+        </div>
+        <div class="progress-bar">
+          <div class="progress" id="tokens-progress" style="width: 0%;"></div>
+        </div>
+        <div class="state-item">
+          <span>Words:</span>
+          <span id="words-display">None</span>
+        </div>
+        <div class="state-item">
+          <span>Boost:</span>
+          <span id="boost-display">No</span>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Actions</h3>
+        <input type="text" id="word-input" placeholder="Enter word (e.g., CAT)">
+        <button id="submit-word">Submit Word</button>
+        <button id="get-hint">Get Hint (5 tokens)</button>
+        <button id="boost-up">Boost Up (3 tokens)</button>
+        <input type="text" id="bomb-target" placeholder="Target wallet for bomb">
+        <button id="launch-bomb">Launch Bomb (5 tokens)</button>
+        <input type="text" id="transfer-target" placeholder="Target wallet for transfer">
+        <input type="number" id="transfer-amount" placeholder="Amount" min="1">
+        <button id="transfer-tokens">Transfer Tokens</button>
+      </div>
+      <div class="rules-card">
+        <h3>Rules</h3>
+        <ul>
+          <li>Submit words using the round's letters to earn points (1 per letter).</li>
+          <li>Get a hint for 5 tokens to reveal a valid word.</li>
+          <li>Activate Boost for 3 tokens to double your next word's points.</li>
+          <li>Launch a Bomb for 5 tokens to remove an opponent's word and points.</li>
+          <li>Transfer tokens to other players to help or strategize.</li>
+          <li>Check the leaderboard to see the top 5 players by points and tokens.</li>
+        </ul>
+      </div>
+      <div class="leaderboard-card" id="leaderboard-display">
+        <div class="leaderboard-header">
+          <h3>Leaderboard</h3>
+          <button id="refresh-leaderboard" class="refresh-button" title="Refresh Leaderboard">↻</button>
+        </div>
+        <table class="leaderboard-table">
+          <thead>
+            <tr>
+              <th>Rank</th>
+              <th>Player</th>
+              <th>Points</th>
+              <th>Tokens</th>
+            </tr>
+          </thead>
+          <tbody id="leaderboard-body"></tbody>
+        </table>
+      </div>
+    </div>
+    <div id="response"></div>
+  </div>
+  <script type="module">
+    import { dryrun, message, createDataItemSigner } from 'https://unpkg.com/@permaweb/aoconnect@latest/dist/browser.js';
+    window.dryrun = dryrun;
+    window.message = message;
+    window.createDataItemSigner = createDataItemSigner;
+  </script>
+  <script>
+    const particlesDiv = document.getElementById('particles');
+    for (let i = 0; i < 50; i++) {
+      const particle = document.createElement('div');
+      particle.style.position = 'absolute';
+      particle.style.background = `rgba(${Math.random() * 221}, ${Math.random() * 161}, 94, 0.5)`; /* Light orange tint */
+      particle.style.width = `${Math.random() * 3 + 1}px`;
+      particle.style.height = particle.style.width;
+      particle.style.borderRadius = '50%';
+      particle.style.left = `${Math.random() * 100}%`;
+      particle.style.top = `${Math.random() * 100}%`;
+      particle.style.animation = `float ${Math.random() * 10 + 5}s infinite`;
+      particlesDiv.appendChild(particle);
+    }
+  </script>
+  <style>
+    @keyframes float {
+      0%, 100% { transform: translateY(0); opacity: 0.5; }
+      50% { transform: translateY(-20px); opacity: 0.2; }
+    }
+  </style>
+  <script src="main.js"></script>
+</body>
+</html>
